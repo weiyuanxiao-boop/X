@@ -1,0 +1,72 @@
+# Log settings
+log_dir: logs
+max_log_size_mb: 100
+
+# Model routing configuration
+# Key: model name exposed to downstream clients
+# Value: provider + upstream model mapping
+
+models:
+  claude-sonnet-4-20250514:
+    provider: claude
+    upstream_model: claude-sonnet-4-20250514
+    api_key_env: CLAUDE_API_KEY
+    base_url: "https://api.anthropic.com"
+    api_version: "2023-06-01"
+
+  claude-opus-4-20250514:
+    provider: claude
+    upstream_model: claude-opus-4-20250514
+    api_key_env: CLAUDE_API_KEY
+    base_url: "https://api.anthropic.com"
+    api_version: "2023-06-01"
+
+  gpt-4o:
+    provider: openai
+    upstream_model: gpt-4o
+    api_key_env: OPENAI_API_KEY
+    base_url: "https://api.openai.com"
+
+  gpt-4o-mini:
+    provider: openai
+    upstream_model: gpt-4o-mini
+    api_key_env: OPENAI_API_KEY
+    base_url: "https://api.openai.com"
+
+  deepseek-chat:
+    provider: openai
+    upstream_model: deepseek-chat
+    api_key_env: DEEPSEEK_API_KEY
+    base_url: "https://api.deepseek.com"
+
+  deepseek-coder:
+    provider: openai
+    upstream_model: deepseek-coder
+    api_key_env: DEEPSEEK_API_KEY
+    base_url: "https://api.deepseek.com"
+
+  deepseek-v4-pro:
+    provider: openai
+    upstream_model: deepseek-v4-pro
+    api_key_env: DEEPSEEK_API_KEY
+    base_url: "https://api.deepseek.com"
+
+  deepseek-v4-pro-anthropic:
+    provider: claude
+    upstream_model: deepseek-v4-pro
+    api_key_env: DEEPSEEK_API_KEY
+    base_url: "https://api.deepseek.com/anthropic"
+
+  qwen3.6-plus:
+    provider: claude
+    upstream_model: qwen3.6-plus
+    api_key_env: QWEN_API_KEY
+    base_url: "https://token-plan.cn-beijing.maas.aliyuncs.com/apps/anthropic"
+
+# Default model when client doesn't specify
+default_model: deepseek-v4-pro-anthropic
+
+# Model alias mapping (downstream name → actual model name in models section)
+aliases:
+  cc-coder: deepseek-v4-pro-anthropic
+
