@@ -56,6 +56,7 @@ class ModelConfig:
             "api_key": api_key,
             "base_url": cfg["base_url"],
             "api_version": cfg.get("api_version", ""),
+            "reasoning_effort": cfg.get("reasoning_effort"),  # Default reasoning effort from config
         }
 
     @property

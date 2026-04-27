@@ -67,6 +67,58 @@ python app/main.py
 - `DEEPSEEK_API_KEY`
 - `QWEN_API_KEY`
 
+## 高级参数
+
+### reasoning_effort (思考强度)
+支持值：`low` | `medium` | `high` | `xhigh` | `max`
+
+**配置方式（优先级从高到低）：**
+1. **客户端请求参数** - 请求中传入的 `reasoning_effort` 或 `output_config`
+2. **config.yaml 配置** - 模型配置中的 `reasoning_effort` 字段（客户端不传时使用）
+
+支持两种传递格式（自动转换）：
+- **简化格式**: `{"reasoning_effort": "high"}`
+- **Claude 原生格式**: `{"output_config": {"effort": "high"}}`
+
+代理会根据上游协议自动转换：
+- **Claude 协议**: 统一转为 `{"output_config": {"effort": "high"}}`
+- **OpenAI 协议**: 统一转为 `{"reasoning_effort": "high"}`
+
+### config.yaml 配置示例
+```yaml
+models:
+  deepseek-v4-pro-anthropic:
+    provider: claude
+    upstream_model: deepseek-v4-pro
+    api_key_env: DEEPSEEK_API_KEY
+    base_url: "https://api.deepseek.com/anthropic"
+    reasoning_effort: "high"  # 默认思考强度
+```
+
+### 客户端调用示例
+```python
+# 方式 1：简化格式
+r = httpx.post("http://localhost:4936/v1/messages", json={
+    "model": "qwen3.6-plus",
+    "messages": [{"role": "user", "content": "你好"}],
+    "reasoning_effort": "high",
+})
+
+# 方式 2：Claude 原生格式
+r = httpx.post("http://localhost:4936/v1/messages", json={
+    "model": "qwen3.6-plus",
+    "messages": [{"role": "user", "content": "你好"}],
+    "output_config": {"effort": "high"},
+})
+
+# 方式 3：使用 config.yaml 配置的默认值（客户端不传 reasoning_effort）
+r = httpx.post("http://localhost:4936/v1/messages", json={
+    "model": "deepseek-v4-pro-anthropic",  # 此模型配置了 reasoning_effort: "high"
+    "messages": [{"role": "user", "content": "你好"}],
+    # 不传 reasoning_effort，自动使用配置的 "high"
+})
+```
+
 ## 开发规范
 
 ### 代码风格

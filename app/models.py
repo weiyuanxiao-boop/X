@@ -54,6 +54,8 @@ class ClaudeRequest(BaseModel):
     tools: list[dict] | None = None
     tool_choice: dict | None = None
     metadata: dict | None = None
+    reasoning_effort: Literal["low", "medium", "high", "xhigh", "max"] | None = None
+    output_config: dict | None = None
 
 
 class ClaudeResponse(BaseModel):

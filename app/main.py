@@ -26,7 +26,7 @@ app = FastAPI(title="LLM Proxy Gateway", version="1.0.0")
 
 def _collect_extra_params(req: ClaudeRequest) -> dict:
     params = {}
-    for key in ("temperature", "top_p", "max_tokens", "stop_sequences", "top_k", "metadata"):
+    for key in ("temperature", "top_p", "max_tokens", "stop_sequences", "top_k", "metadata", "reasoning_effort", "output_config"):
         val = getattr(req, key, None)
         if val is not None:
             params[key] = val
@@ -53,6 +53,12 @@ async def create_message(req: ClaudeRequest, request: Request):
     upstream = model_config.get_upstream_info(model_name)
     client_id = request.client.host if request.client else "unknown"
 
+    # Apply default reasoning_effort from config if client doesn't provide one
+    if not req.reasoning_effort and not req.output_config:
+        config_reasoning_effort = upstream.get("reasoning_effort")
+        if config_reasoning_effort:
+            req.reasoning_effort = config_reasoning_effort
+
     # Convert messages to dict, handling both string and ContentBlock array content
     messages = []
     for m in req.messages:
@@ -62,7 +68,7 @@ async def create_message(req: ClaudeRequest, request: Request):
         else:
             msg_dict["content"] = m.content
         messages.append(msg_dict)
-    
+
     extra = _collect_extra_params(req)
     conv_id = logger.log_request(model_name, upstream["upstream_model"], messages, client_id, extra)
 

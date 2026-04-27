@@ -38,12 +38,12 @@ python -c "import httpx; r=httpx.post('http://localhost:4936/v1/messages', json=
 | `app/proxy.py` | HTTP 转发到上游提供商，Claude 与 OpenAI 格式互转 |
 | `app/logger.py` | JSON 文件日志，文件名格式 `conversations_{下游}_{上游}_{日期}.json` |
 | `app/models.py` | Pydantic 请求/响应模型 |
-| `config.yaml` | 模型定义（provider、upstream_model、base_url、api_key_env）和别名映射 |
+| `config.yaml` | 模型定义（provider、upstream_model、base_url、api_key_env, reasoning_effort）和别名映射 |
 | `.env` | API Key 和服务配置 |
 
 ### 关键设计
 
-- **别名解析** — `ModelConfig._resolve()` 在查找模型前先将别名映射到实际模型 key（如 `qwen3.6-plus` → `deepseek-v4-pro-anthropic`）
+- **别名解析** — `ModelConfig._resolve()` 在查找模型前先将别名映射到实际模型 key（如 `cc-coder` → `deepseek-v4-pro-anthropic`）
 - **两种提供商** — `claude` 使用 Anthropic `/v1/messages` 协议；`openai` 使用 `/v1/chat/completions` 并自动转换为 Claude 响应格式
 - **流式日志** — 在 SSE 流式传输过程中收集文本块，最终写入完整响应到日志
 - **日志目录** — `logs/`，按下游模型名、上游模型名和日期分文件

@@ -48,6 +48,11 @@ async def call_claude(req: ClaudeRequest, upstream: dict) -> dict:
         body["tools"] = _convert_to_dict(req.tools)
     if req.tool_choice:
         body["tool_choice"] = _convert_to_dict(req.tool_choice)
+    # Handle reasoning_effort: support both {"reasoning_effort": "high"} and {"output_config": {"effort": "high"}}
+    if req.output_config:
+        body["output_config"] = req.output_config
+    elif req.reasoning_effort:
+        body["output_config"] = {"effort": req.reasoning_effort}
 
     async with httpx.AsyncClient(timeout=120.0) as client:
         resp = await client.post(url, headers=headers, json=body)
@@ -83,6 +88,11 @@ async def stream_claude(req: ClaudeRequest, upstream: dict) -> AsyncGenerator[st
         body["tools"] = _convert_to_dict(req.tools)
     if req.tool_choice:
         body["tool_choice"] = _convert_to_dict(req.tool_choice)
+    # Handle reasoning_effort: support both {"reasoning_effort": "high"} and {"output_config": {"effort": "high"}}
+    if req.output_config:
+        body["output_config"] = req.output_config
+    elif req.reasoning_effort:
+        body["output_config"] = {"effort": req.reasoning_effort}
 
     async with httpx.AsyncClient(timeout=120.0) as client:
         async with client.stream("POST", url, headers=headers, json=body) as resp:
@@ -118,6 +128,12 @@ async def call_openai(req: ClaudeRequest, upstream: dict) -> dict:
         body["tools"] = _convert_to_dict(req.tools)
     if req.tool_choice:
         body["tool_choice"] = _convert_to_dict(req.tool_choice)
+    # Handle reasoning_effort: support both {"reasoning_effort": "high"} and {"output_config": {"effort": "high"}}
+    # For OpenAI, convert output_config.effort to reasoning_effort
+    if req.output_config and "effort" in req.output_config:
+        body["reasoning_effort"] = req.output_config["effort"]
+    elif req.reasoning_effort:
+        body["reasoning_effort"] = req.reasoning_effort
 
     async with httpx.AsyncClient(timeout=120.0) as client:
         resp = await client.post(url, headers=headers, json=body)
@@ -146,6 +162,12 @@ async def stream_openai(req: ClaudeRequest, upstream: dict) -> AsyncGenerator[st
         body["tools"] = _convert_to_dict(req.tools)
     if req.tool_choice:
         body["tool_choice"] = _convert_to_dict(req.tool_choice)
+    # Handle reasoning_effort: support both {"reasoning_effort": "high"} and {"output_config": {"effort": "high"}}
+    # For OpenAI, convert output_config.effort to reasoning_effort
+    if req.output_config and "effort" in req.output_config:
+        body["reasoning_effort"] = req.output_config["effort"]
+    elif req.reasoning_effort:
+        body["reasoning_effort"] = req.reasoning_effort
 
     async with httpx.AsyncClient(timeout=120.0) as client:
         async with client.stream("POST", url, headers=headers, json=body) as resp:
