@@ -64,10 +64,16 @@ models:
     api_key_env: QWEN_API_KEY
     base_url: "https://token-plan.cn-beijing.maas.aliyuncs.com/apps/anthropic"
 
+  Qwen3.6-Coder:
+    provider: openai
+    upstream_model: Qwen3.6-Coder
+    api_key_env: QWEN_API_KEY
+    base_url: "http://192.168.31.20:8000"
+
 # Default model when client doesn't specify
 default_model: deepseek-v4-pro-anthropic
 
 # Model alias mapping (downstream name → actual model name in models section)
 aliases:
-  cc-coder: deepseek-v4-pro-anthropic
+  cc-coder: qwen3.6-plus    #Qwen3.6-Coder   #     #deepseek-v4-pro-anthropic
 

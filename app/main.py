@@ -121,7 +121,8 @@ async def create_message(req: ClaudeRequest, request: Request):
 
     text = ""
     for block in result.get("content", []):
-        text += block.get("text", "")
+        block_text = block.get("text") or block.get("thinking") or ""
+        text += block_text
 
     usage = result.get("usage", {})
     logger.log_response(model_name, upstream["upstream_model"], conv_id, text, usage, result.get("stop_reason", "end_turn"))

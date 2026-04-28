@@ -19,6 +19,24 @@ def _convert_to_dict(obj):
     return obj
 
 
+def _to_openai_tool_format(tool: dict) -> dict:
+    """Convert Claude-style tool to OpenAI tool format."""
+    # Claude format: {name, description, input_schema}
+    # OpenAI format: {type: "function", function: {name, description, parameters}}
+    if tool.get("type") == "function" and "function" in tool:
+        # Already in OpenAI format
+        return tool
+    # Convert from Claude format
+    return {
+        "type": "function",
+        "function": {
+            "name": tool.get("name", ""),
+            "description": tool.get("description", ""),
+            "parameters": tool.get("input_schema", {}),
+        },
+    }
+
+
 # ── Claude provider ──────────────────────────────────────────────
 
 async def call_claude(req: ClaudeRequest, upstream: dict) -> dict:
@@ -56,6 +74,9 @@ async def call_claude(req: ClaudeRequest, upstream: dict) -> dict:
 
     async with httpx.AsyncClient(timeout=120.0) as client:
         resp = await client.post(url, headers=headers, json=body)
+        if resp.status_code != 200:
+            print(f"Upstream Claude API Error: {resp.status_code}")
+            print(f"Response: {resp.text}")
         resp.raise_for_status()
         return resp.json()
 
@@ -125,7 +146,9 @@ async def call_openai(req: ClaudeRequest, upstream: dict) -> dict:
     if req.stop_sequences:
         body["stop"] = req.stop_sequences
     if req.tools:
-        body["tools"] = _convert_to_dict(req.tools)
+        # Convert tools to OpenAI format: {type: "function", function: {name, description, parameters}}
+        tools = _convert_to_dict(req.tools)
+        body["tools"] = [_to_openai_tool_format(t) for t in tools]
     if req.tool_choice:
         body["tool_choice"] = _convert_to_dict(req.tool_choice)
     # Handle reasoning_effort: support both {"reasoning_effort": "high"} and {"output_config": {"effort": "high"}}
@@ -137,6 +160,9 @@ async def call_openai(req: ClaudeRequest, upstream: dict) -> dict:
 
     async with httpx.AsyncClient(timeout=120.0) as client:
         resp = await client.post(url, headers=headers, json=body)
+        if resp.status_code != 200:
+            print(f"Upstream API Error: {resp.status_code}")
+            print(f"Response: {resp.text}")
         resp.raise_for_status()
         return _openai_to_claude(resp.json(), upstream["upstream_model"])
 
@@ -159,7 +185,9 @@ async def stream_openai(req: ClaudeRequest, upstream: dict) -> AsyncGenerator[st
     if req.stop_sequences:
         body["stop"] = req.stop_sequences
     if req.tools:
-        body["tools"] = _convert_to_dict(req.tools)
+        # Convert tools to OpenAI format: {type: "function", function: {name, description, parameters}}
+        tools = _convert_to_dict(req.tools)
+        body["tools"] = [_to_openai_tool_format(t) for t in tools]
     if req.tool_choice:
         body["tool_choice"] = _convert_to_dict(req.tool_choice)
     # Handle reasoning_effort: support both {"reasoning_effort": "high"} and {"output_config": {"effort": "high"}}
@@ -219,7 +247,16 @@ def _to_claude_messages(req: ClaudeRequest) -> list[dict]:
             continue  # system handled separately
         # Convert content to dict format for JSON serialization
         if isinstance(msg.content, list):
-            content = [_convert_to_dict(c) for c in msg.content]
+            # Filter out 'thinking' type content - it's intermediate and shouldn't be sent upstream
+            content = []
+            for c in msg.content:
+                c_dict = _convert_to_dict(c)
+                if isinstance(c_dict, dict) and c_dict.get("type") == "thinking":
+                    continue  # Skip thinking blocks
+                content.append(c_dict)
+            # If all content was filtered out, skip this message
+            if not content:
+                continue
         else:
             content = msg.content
         messages.append({"role": msg.role, "content": content})
@@ -244,15 +281,51 @@ def _to_openai_messages(req: ClaudeRequest) -> list[dict]:
 
 def _openai_to_claude(resp: dict, model: str) -> dict:
     choice = resp["choices"][0]
-    text = choice.get("message", {}).get("content", "")
+    message = choice.get("message", {})
     finish = choice.get("finish_reason", "stop")
-    stop_map = {"stop": "end_turn", "length": "max_tokens", "content_filter": "stop_sequence"}
+    stop_map = {"stop": "end_turn", "length": "max_tokens", "content_filter": "stop_sequence", "tool_calls": "tool_use"}
     usage = resp.get("usage", {})
+    
+    content = []
+    
+    # Handle reasoning/thinking content if present
+    reasoning = message.get("reasoning")
+    if reasoning:
+        content.append({"type": "thinking", "thinking": reasoning})
+    
+    # Handle text content if present
+    text = message.get("content")
+    if text:
+        content.append({"type": "text", "text": text})
+    
+    # Handle tool_calls if present
+    tool_calls = message.get("tool_calls", [])
+    for tc in tool_calls:
+        if tc.get("type") == "function":
+            func = tc.get("function", {})
+            # Parse arguments if it's a JSON string
+            args = func.get("arguments", "{}")
+            if isinstance(args, str):
+                try:
+                    args = json.loads(args)
+                except json.JSONDecodeError:
+                    pass
+            content.append({
+                "type": "tool_use",
+                "id": tc.get("id", ""),
+                "name": func.get("name", ""),
+                "input": args,
+            })
+    
+    # Fallback: if no content at all, add empty text
+    if not content:
+        content.append({"type": "text", "text": ""})
+    
     return {
         "id": resp.get("id", ""),
         "type": "message",
         "role": "assistant",
-        "content": [{"type": "text", "text": text}],
+        "content": content,
         "model": model,
         "stop_reason": stop_map.get(finish, "end_turn"),
         "stop_sequence": None,
