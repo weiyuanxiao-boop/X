@@ -82,3 +82,21 @@ class OpenAIResponse(BaseModel):
     model: str
     choices: list[dict]
     usage: Usage | None = None
+
+
+class OpenAIMessage(BaseModel):
+    role: str
+    content: Union[str, list[dict]] | None = None
+
+
+class OpenAIRequest(BaseModel):
+    model: str = ""
+    messages: list[OpenAIMessage]
+    max_tokens: int | None = None
+    temperature: float = 1.0
+    stream: bool = False
+    top_p: float = 1.0
+    stop: Union[str, list[str]] | None = None
+    tools: list[dict] | None = None
+    tool_choice: dict | None = None
+    reasoning_effort: Literal["low", "medium", "high", "xhigh", "max"] | None = None

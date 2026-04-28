@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .config import get_model_config
+from .config import get_settings, get_logger
 
 
 def _safe_name(name: str) -> str:
@@ -13,8 +13,10 @@ def _safe_name(name: str) -> str:
 
 class ConversationLogger:
     def __init__(self):
-        self._log_dir = get_model_config().log_dir
+        settings = get_settings()
+        self._log_dir = settings.log_dir_path
         self._log_dir.mkdir(parents=True, exist_ok=True)
+        self._logger = get_logger("conversation")
 
     def _today_file(self, downstream_model: str, upstream_model: str) -> Path:
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -27,7 +29,7 @@ class ConversationLogger:
                 with open(path, "r", encoding="utf-8") as f:
                     return json.load(f)
             except json.JSONDecodeError:
-                # Log file corrupted, start fresh
+                self._logger.warning(f"Log file corrupted, starting fresh: {path}")
                 return []
         return []
 
@@ -55,6 +57,7 @@ class ConversationLogger:
         logs = self._read_log(path)
         logs.append(entry)
         self._write_log(path, logs)
+        self._logger.debug(f"Logged request {conv_id} for {downstream_model} -> {upstream_model}")
         return conv_id
 
     def log_response(self, downstream_model: str, upstream_model: str, conv_id: str, response_text: str, usage: dict, finish_reason: str):
@@ -70,6 +73,7 @@ class ConversationLogger:
                 }
                 break
         self._write_log(path, logs)
+        self._logger.debug(f"Logged response for {conv_id}, finish_reason: {finish_reason}")
 
 
 logger = ConversationLogger()

@@ -1,3 +1,4 @@
+import logging
 import os
 from functools import lru_cache
 from pathlib import Path
@@ -14,13 +15,19 @@ CONFIG_DIR = Path(__file__).resolve().parent.parent
 class Settings(BaseSettings):
     host: str = "0.0.0.0"
     port: int = 4936
+    log_dir: str = "logs"
+    log_level: str = "INFO"
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
+
+    @property
+    def log_dir_path(self) -> Path:
+        return CONFIG_DIR / self.log_dir
 
 
 class ModelConfig:
     def __init__(self):
-        config_path = CONFIG_DIR / "config.yaml"
+        config_path = CONFIG_DIR / "model_config.yaml"
         with open(config_path, "r", encoding="utf-8") as f:
             self._config = yaml.safe_load(f)
         self._models = self._config.get("models", {})
@@ -56,12 +63,42 @@ class ModelConfig:
             "api_key": api_key,
             "base_url": cfg["base_url"],
             "api_version": cfg.get("api_version", ""),
-            "reasoning_effort": cfg.get("reasoning_effort"),  # Default reasoning effort from config
+            "reasoning_effort": cfg.get("reasoning_effort"),
         }
 
-    @property
-    def log_dir(self) -> Path:
-        return CONFIG_DIR / self._config.get("log_dir", "logs")
+
+def setup_logger(name: str) -> logging.Logger:
+    """Setup logger with file and console handlers."""
+    settings = get_settings()
+    logger = logging.getLogger(name)
+    logger.setLevel(getattr(logging, settings.log_level.upper(), logging.INFO))
+
+    # Ensure log directory exists
+    settings.log_dir_path.mkdir(parents=True, exist_ok=True)
+
+    # File handler
+    log_file = settings.log_dir_path / f"{name}.log"
+    file_handler = logging.FileHandler(log_file, encoding="utf-8")
+    file_handler.setLevel(logging.DEBUG)
+
+    # Console handler
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.INFO)
+
+    # Formatter
+    formatter = logging.Formatter(
+        "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S"
+    )
+    file_handler.setFormatter(formatter)
+    console_handler.setFormatter(formatter)
+
+    # Avoid duplicate handlers
+    if not logger.handlers:
+        logger.addHandler(file_handler)
+        logger.addHandler(console_handler)
+
+    return logger
 
 
 @lru_cache
@@ -72,3 +109,8 @@ def get_settings() -> Settings:
 @lru_cache
 def get_model_config() -> ModelConfig:
     return ModelConfig()
+
+
+@lru_cache
+def get_logger(name: str = "app") -> logging.Logger:
+    return setup_logger(name)

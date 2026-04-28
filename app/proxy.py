@@ -1,9 +1,47 @@
 import json
+import logging
 from typing import AsyncGenerator
 
 import httpx
 
-from .models import ClaudeRequest
+from .config import get_logger
+from .models import ClaudeRequest, OpenAIRequest
+
+logger = get_logger("proxy")
+
+
+def _openai_to_claude_request(req: OpenAIRequest) -> ClaudeRequest:
+    """Convert OpenAI chat completion request to Claude format."""
+    # Convert messages
+    messages = []
+    system = None
+    for msg in req.messages:
+        if msg.role == "system":
+            system = msg.content
+        else:
+            messages.append({"role": msg.role, "content": msg.content or ""})
+    
+    # Convert stop to stop_sequences
+    stop_sequences = None
+    if req.stop:
+        if isinstance(req.stop, str):
+            stop_sequences = [req.stop]
+        else:
+            stop_sequences = req.stop
+    
+    return ClaudeRequest(
+        model=req.model,
+        messages=messages,
+        max_tokens=req.max_tokens or 1024,
+        temperature=req.temperature,
+        stream=req.stream,
+        system=system,
+        stop_sequences=stop_sequences,
+        top_p=req.top_p,
+        tools=req.tools,
+        tool_choice=req.tool_choice,
+        reasoning_effort=req.reasoning_effort,
+    )
 
 
 # ── Helper functions ────────────────────────────────────────────
@@ -75,8 +113,7 @@ async def call_claude(req: ClaudeRequest, upstream: dict) -> dict:
     async with httpx.AsyncClient(timeout=120.0) as client:
         resp = await client.post(url, headers=headers, json=body)
         if resp.status_code != 200:
-            print(f"Upstream Claude API Error: {resp.status_code}")
-            print(f"Response: {resp.text}")
+            logger.error(f"Upstream Claude API Error: {resp.status_code}, Response: {resp.text}")
         resp.raise_for_status()
         return resp.json()
 
@@ -116,18 +153,86 @@ async def stream_claude(req: ClaudeRequest, upstream: dict) -> AsyncGenerator[st
         body["output_config"] = {"effort": req.reasoning_effort}
 
     async with httpx.AsyncClient(timeout=120.0) as client:
+        logger.debug(f"Claude stream request: {body}")
         async with client.stream("POST", url, headers=headers, json=body) as resp:
             resp.raise_for_status()
             async for line in resp.aiter_lines():
-                if not line or not line.startswith("data: "):
+                logger.debug(f"Claude stream line: {line}")
+                if not line or not line.startswith("data:"):
                     continue
-                data = line[6:]
+                data = line[5:]  # Remove "data:" prefix
                 if data == "[DONE]":
                     break
+                logger.debug(f"Yielding data: {data[:50]}...")
                 yield f"data: {data}\n\n"
 
 
 # ── OpenAI-compatible provider ───────────────────────────────────
+
+async def call_openai_passthrough(req: OpenAIRequest, upstream: dict) -> dict:
+    """Call OpenAI upstream and return response as-is (passthrough mode)."""
+    url = f"{upstream['base_url']}/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {upstream['api_key']}",
+        "content-type": "application/json",
+    }
+    body = {
+        "model": upstream["upstream_model"],
+        "messages": [m.model_dump() if hasattr(m, "model_dump") else m for m in req.messages],
+        "max_tokens": req.max_tokens,
+        "temperature": req.temperature,
+    }
+    if req.top_p != 1.0:
+        body["top_p"] = req.top_p
+    if req.stop:
+        body["stop"] = req.stop if isinstance(req.stop, list) else [req.stop]
+    if req.tools:
+        body["tools"] = req.tools
+    if req.tool_choice:
+        body["tool_choice"] = req.tool_choice
+    if req.reasoning_effort:
+        body["reasoning_effort"] = req.reasoning_effort
+
+    async with httpx.AsyncClient(timeout=120.0) as client:
+        resp = await client.post(url, headers=headers, json=body)
+        if resp.status_code != 200:
+            logger.error(f"Upstream OpenAI API Error: {resp.status_code}, Response: {resp.text}")
+        resp.raise_for_status()
+        return resp.json()
+
+
+async def stream_openai_passthrough(req: OpenAIRequest, upstream: dict) -> AsyncGenerator[str, None]:
+    """Stream from OpenAI upstream and yield as-is (passthrough mode)."""
+    url = f"{upstream['base_url']}/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {upstream['api_key']}",
+        "content-type": "application/json",
+    }
+    body = {
+        "model": upstream["upstream_model"],
+        "messages": [m.model_dump() if hasattr(m, "model_dump") else m for m in req.messages],
+        "max_tokens": req.max_tokens,
+        "temperature": req.temperature,
+        "stream": True,
+    }
+    if req.top_p != 1.0:
+        body["top_p"] = req.top_p
+    if req.stop:
+        body["stop"] = req.stop if isinstance(req.stop, list) else [req.stop]
+    if req.tools:
+        body["tools"] = req.tools
+    if req.tool_choice:
+        body["tool_choice"] = req.tool_choice
+    if req.reasoning_effort:
+        body["reasoning_effort"] = req.reasoning_effort
+
+    async with httpx.AsyncClient(timeout=120.0) as client:
+        async with client.stream("POST", url, headers=headers, json=body) as resp:
+            resp.raise_for_status()
+            async for line in resp.aiter_lines():
+                if line and line.startswith("data: "):
+                    yield f"data: {line[6:]}\n\n"
+
 
 async def call_openai(req: ClaudeRequest, upstream: dict) -> dict:
     url = f"{upstream['base_url']}/v1/chat/completions"
@@ -161,8 +266,7 @@ async def call_openai(req: ClaudeRequest, upstream: dict) -> dict:
     async with httpx.AsyncClient(timeout=120.0) as client:
         resp = await client.post(url, headers=headers, json=body)
         if resp.status_code != 200:
-            print(f"Upstream API Error: {resp.status_code}")
-            print(f"Response: {resp.text}")
+            logger.error(f"Upstream OpenAI API Error: {resp.status_code}, Response: {resp.text}")
         resp.raise_for_status()
         return _openai_to_claude(resp.json(), upstream["upstream_model"])
 
@@ -287,12 +391,13 @@ def _openai_to_claude(resp: dict, model: str) -> dict:
     usage = resp.get("usage", {})
     
     content = []
-    
+
     # Handle reasoning/thinking content if present
-    reasoning = message.get("reasoning")
+    # Check both "reasoning_content" (OpenAI standard) and "reasoning" (alternative)
+    reasoning = message.get("reasoning_content") or message.get("reasoning")
     if reasoning:
         content.append({"type": "thinking", "thinking": reasoning})
-    
+
     # Handle text content if present
     text = message.get("content")
     if text:
@@ -337,25 +442,186 @@ def _openai_to_claude(resp: dict, model: str) -> dict:
 
 
 async def _stream_openai_to_claude(resp, model: str) -> AsyncGenerator[str, None]:
+    """Convert OpenAI stream response to Claude stream format.
+    
+    Simulates full Claude streaming format:
+    message_start -> content_block_start(thinking) -> content_block_delta(thinking) -> content_block_stop
+                  -> content_block_start(text) -> content_block_delta(text) -> content_block_stop
+                  -> message_delta -> message_stop
+    """
+    import time
+    import uuid
+    
+    # Generate message ID
+    message_id = f"msg_{uuid.uuid4()}"
+    created_time = int(time.time())
+    
+    # Track state
+    message_started = False
+    thinking_started = False
+    text_started = False
+    input_tokens = 0
+    output_tokens = 0
+    
     async for line in resp.aiter_lines():
         if not line or not line.startswith("data: "):
             continue
+
         data = line[6:]
         if data == "[DONE]":
-            yield f'data: {{"type":"message_delta","delta":{{"stop_reason":"end_turn","stop_sequence":null}},"usage":{{"output_tokens":0}}}}\n\n'
-            yield "data: [DONE]\n\n"
+            # Send content_block_stop for any open blocks
+            if text_started:
+                event = {"type": "content_block_stop", "index": 1}
+                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+            elif thinking_started:
+                event = {"type": "content_block_stop", "index": 0}
+                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+            
+            # Send message_delta and message_stop
+            yield f'data: {{"type":"message_delta","delta":{{"stop_reason":"end_turn","stop_sequence":null}},"usage":{{"input_tokens":{input_tokens},"output_tokens":{output_tokens}}}}}\n\n'
+            yield 'data: {"type":"message_stop"}\n\n'
             break
 
         try:
             chunk = json.loads(data)
-            delta = chunk.get("choices", [{}])[0].get("delta", {})
-            text = delta.get("content", "")
-            if text:
+            choice = chunk.get("choices", [{}])[0]
+            delta = choice.get("delta", {})
+            
+            # Send message_start on first content
+            if not message_started and (delta.get("content") or delta.get("reasoning_content") or delta.get("reasoning")):
+                message_started = True
+                event = {
+                    "type": "message_start",
+                    "message": {
+                        "id": message_id,
+                        "type": "message",
+                        "role": "assistant",
+                        "model": model,
+                        "content": [],
+                        "stop_reason": None,
+                        "stop_sequence": None,
+                        "usage": {"input_tokens": 0, "output_tokens": 0}
+                    }
+                }
+                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+            
+            # Extract reasoning_content first (if present) - convert to thinking_delta
+            reasoning = delta.get("reasoning_content") or delta.get("reasoning")
+            if reasoning:
+                if not thinking_started:
+                    # Send content_block_start for thinking
+                    event = {
+                        "type": "content_block_start",
+                        "index": 0,
+                        "content_block": {"type": "thinking", "thinking": "", "signature": ""}
+                    }
+                    yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+                    thinking_started = True
+                
                 event = {
                     "type": "content_block_delta",
                     "index": 0,
+                    "delta": {"type": "thinking_delta", "thinking": reasoning},
+                }
+                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+
+            # Extract content text
+            text = delta.get("content")
+            if text:
+                if not text_started:
+                    # Close thinking block if open
+                    if thinking_started:
+                        event = {"type": "content_block_stop", "index": 0}
+                        yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+                    
+                    # Send content_block_start for text
+                    event = {
+                        "type": "content_block_start",
+                        "index": 1,
+                        "content_block": {"type": "text", "text": ""}
+                    }
+                    yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+                    text_started = True
+                
+                event = {
+                    "type": "content_block_delta",
+                    "index": 1,
                     "delta": {"type": "text_delta", "text": text},
                 }
-                yield f"data: {json.dumps(event)}\n\n"
+                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+
+            # Check for finish reason - collect usage info
+            finish_reason = choice.get("finish_reason")
+            if finish_reason:
+                usage = chunk.get("usage", {})
+                input_tokens = usage.get("prompt_tokens", 0)
+                output_tokens = usage.get("completion_tokens", 0)
+                # message_delta and message_stop will be sent when [DONE] is received
         except json.JSONDecodeError:
             continue
+
+
+def _claude_to_openai(resp: dict) -> dict:
+    """Convert Claude response to OpenAI chat completion format."""
+    import time
+
+    # Extract text, thinking and tool_calls from content
+    text = ""
+    thinking = ""
+    tool_calls = []
+
+    for block in resp.get("content", []):
+        block_type = block.get("type", "")
+        # Handle both "text" and "text_delta" types
+        if block_type in ("text", "text_delta"):
+            text += block.get("text", "")
+        elif block_type == "thinking":
+            thinking += block.get("thinking", "")
+        elif block_type == "tool_use":
+            tool_calls.append({
+                "id": block.get("id", ""),
+                "type": "function",
+                "function": {
+                    "name": block.get("name", ""),
+                    "arguments": json.dumps(block.get("input", {})),
+                },
+            })
+
+    # Map stop_reason
+    stop_reason = resp.get("stop_reason", "end_turn")
+    finish_map = {
+        "end_turn": "stop",
+        "max_tokens": "length",
+        "stop_sequence": "stop",
+        "tool_use": "tool_calls",
+    }
+
+    # Build message
+    message = {"role": "assistant"}
+    if text:
+        message["content"] = text
+    if thinking:
+        message["reasoning_content"] = thinking
+    if tool_calls:
+        message["tool_calls"] = tool_calls
+
+    usage = resp.get("usage", {})
+
+    return {
+        "id": resp.get("id", ""),
+        "object": "chat.completion",
+        "created": int(time.time()),
+        "model": resp.get("model", ""),
+        "choices": [
+            {
+                "index": 0,
+                "message": message,
+                "finish_reason": finish_map.get(stop_reason, "stop"),
+            }
+        ],
+        "usage": {
+            "prompt_tokens": usage.get("input_tokens", 0),
+            "completion_tokens": usage.get("output_tokens", 0),
+            "total_tokens": usage.get("input_tokens", 0) + usage.get("output_tokens", 0),
+        },
+    }
