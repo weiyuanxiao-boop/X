@@ -57,6 +57,38 @@ def _convert_to_dict(obj):
     return obj
 
 
+def _convert_tools_to_claude_format(tools):
+    """Convert OpenAI format tools to Claude format.
+    
+    OpenAI format: {"type": "function", "function": {"name": "...", "parameters": {...}}}
+    Claude format: {"name": "...", "description": "...", "input_schema": {...}}
+    """
+    if not tools:
+        return tools
+    
+    claude_tools = []
+    for tool in tools:
+        if isinstance(tool, dict):
+            # Check if it's OpenAI format (has type: "function" and function key)
+            if tool.get("type") == "function" and "function" in tool:
+                func = tool["function"]
+                claude_tools.append({
+                    "name": func.get("name", ""),
+                    "description": func.get("description", ""),
+                    "input_schema": func.get("parameters", {})
+                })
+            # Check if it's already Claude format (has name and input_schema)
+            elif "name" in tool and "input_schema" in tool:
+                claude_tools.append(tool)
+            # Otherwise pass through as-is
+            else:
+                claude_tools.append(tool)
+        else:
+            claude_tools.append(tool)
+    
+    return claude_tools
+
+
 def _to_openai_tool_format(tool: dict) -> dict:
     """Convert Claude-style tool to OpenAI tool format."""
     # Claude format: {name, description, input_schema}
@@ -101,7 +133,9 @@ async def call_claude(req: ClaudeRequest, upstream: dict) -> dict:
     if req.stop_sequences:
         body["stop_sequences"] = req.stop_sequences
     if req.tools:
-        body["tools"] = _convert_to_dict(req.tools)
+        # Convert OpenAI format tools to Claude format if needed
+        tools = _convert_to_dict(req.tools)
+        body["tools"] = _convert_tools_to_claude_format(tools)
     if req.tool_choice:
         body["tool_choice"] = _convert_to_dict(req.tool_choice)
     # Handle reasoning_effort: support both {"reasoning_effort": "high"} and {"output_config": {"effort": "high"}}
@@ -143,7 +177,9 @@ async def stream_claude(req: ClaudeRequest, upstream: dict) -> AsyncGenerator[st
     if req.stop_sequences:
         body["stop_sequences"] = req.stop_sequences
     if req.tools:
-        body["tools"] = _convert_to_dict(req.tools)
+        # Convert OpenAI format tools to Claude format if needed
+        tools = _convert_to_dict(req.tools)
+        body["tools"] = _convert_tools_to_claude_format(tools)
     if req.tool_choice:
         body["tool_choice"] = _convert_to_dict(req.tool_choice)
     # Handle reasoning_effort: support both {"reasoning_effort": "high"} and {"output_config": {"effort": "high"}}

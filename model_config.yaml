@@ -37,12 +37,19 @@ models:
       openai: "https://api.openai.com"
 
   # DeepSeek models - support both OpenAI and Anthropic formats
-  deepseek-chat-openai:
-    upstream_model: deepseek-chat
+  deepseek-v4-flash-openai:
+    upstream_model: deepseek-v4-flash
     api_key_env: DEEPSEEK_API_KEY
     base_url:
       openai: "https://api.deepseek.com"
-      #anthropic: "https://api.deepseek.com/anthropic" #commented out to enforce OpenAI format
+      #anthropic: "https://api.deepseek.com/anthropic"
+  
+  deepseek-v4-flash-anthropic:
+    upstream_model: deepseek-v4-flash
+    api_key_env: DEEPSEEK_API_KEY
+    base_url:
+      #openai: "https://api.deepseek.com"
+      anthropic: "https://api.deepseek.com/anthropic"
 
   deepseek-chat:
     upstream_model: deepseek-chat
