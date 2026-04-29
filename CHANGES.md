@@ -2,6 +2,42 @@
 
 本文档总结了项目的所有重要改动和对应的测试验证。
 
+## 最新改动 (2026-04-29)
+
+### 9. 配置重构：支持多 API 格式优先选择
+**改动内容**:
+- 去掉 `provider` 字段，改用 `base_url` 的子属性 (`openai`/`anthropic`) 来判断支持的 API 格式
+- 一个模型可同时支持多种 API 格式
+- 优先选择不需要转换的格式（下游 OpenAI 时优先上游 OpenAI，下游 Claude 时优先上游 Anthropic）
+
+**配置格式**:
+```yaml
+models:
+  deepseek-v4-flash:
+    upstream_model: deepseek-v4-flash
+    api_key_env: DEEPSEEK_API_KEY
+    base_url:
+      openai: "https://api.deepseek.com"
+      anthropic: "https://api.deepseek.com/anthropic"
+```
+
+**优先级逻辑**:
+1. 下游 OpenAI + 上游有 openai 地址 → 使用 openai (无需转换)
+2. 下游 Claude + 上游有 anthropic 地址 → 使用 anthropic (无需转换)
+3. 否则使用第一个可用的格式
+
+**文件**:
+- `app/config.py` (`get_upstream_info` 新增 `downstream_format` 参数)
+- `app/main.py` (调用时传入 `downstream_format`)
+- `model_config.yaml` (更新为新格式)
+
+**测试覆盖**:
+- ✅ 测试 #12: 格式优先选择
+
+---
+
+## 历史改动
+
 ## 改动列表
 
 ### 1. 配置文件重构
@@ -165,6 +201,7 @@ message_start
 | 9 | reasoning_effort 参数测试 | 参数正常传递 |
 | 10 | 中文输出不被转义 | ensure_ascii=False 验证 |
 | 11 | 单次 message_delta | 不重复返回 stop_reason |
+| 12 | 格式优先选择 | 下游 OpenAI 优先上游 OpenAI，下游 Claude 优先上游 Anthropic |
 
 ## 运行测试
 
@@ -185,6 +222,6 @@ python test_proxy.py --list
 
 ## 测试状态
 
-✅ **11/11 测试通过 (100.0%)**
+✅ **12/12 测试通过 (100.0%)**
 
 所有关键改动都有对应的测试验证。

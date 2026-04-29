@@ -34,14 +34,18 @@ import argparse
 BASE_URL = "http://localhost:4936"
 
 # 测试用模型配置（需要根据实际 config.yaml 调整）
-OPENAI_MODEL = "deepseek-v4-flash"  # provider: openai
-CLAUDE_MODEL = "qwen3.6-plus"       # provider: claude
+OPENAI_MODEL = "deepseek-v4-flash"  # 支持 openai 和 anthropic 格式
+CLAUDE_MODEL = "qwen3.6-plus"       # 只支持 anthropic 格式
 
-# 测试消息
+# 测试消息 - OpenAI 格式
+# https://platform.openai.com/docs/api-reference/chat/create
 TEST_MESSAGES_OPENAI = [
+    {"role": "system", "content": "你是一个乐于助人的助手。"},
     {"role": "user", "content": "你好，请用一句话介绍你自己"}
 ]
 
+# 测试消息 - Claude 格式
+# https://docs.anthropic.com/claude/reference/messages_post
 TEST_MESSAGES_CLAUDE = [
     {"role": "user", "content": "你好，请用一句话介绍你自己"}
 ]
@@ -255,7 +259,7 @@ async def test_claude_to_openai_stream():
                     "model": OPENAI_MODEL,
                     "messages": TEST_MESSAGES_CLAUDE,
                     "stream": True,
-                    "max_tokens": 200
+                    #"max_tokens": 200
                 },
                 headers={"Content-Type": "application/json"}
             )
@@ -351,7 +355,7 @@ async def test_claude_to_openai_non_stream():
                 json={
                     "model": OPENAI_MODEL,
                     "messages": TEST_MESSAGES_CLAUDE,
-                    "max_tokens": 200
+                    #"max_tokens": 200
                 },
                 headers={"Content-Type": "application/json"}
             )
@@ -393,7 +397,7 @@ async def test_claude_to_claude_stream():
                     "model": CLAUDE_MODEL,
                     "messages": TEST_MESSAGES_CLAUDE,
                     "stream": True,
-                    "max_tokens": 50
+                    #"max_tokens": 50
                 },
                 headers={"Content-Type": "application/json"}
             )
@@ -427,7 +431,7 @@ async def test_claude_to_claude_non_stream():
                 json={
                     "model": CLAUDE_MODEL,
                     "messages": TEST_MESSAGES_CLAUDE,
-                    "max_tokens": 50
+                    #"max_tokens": 50
                 },
                 headers={"Content-Type": "application/json"}
             )
@@ -467,7 +471,7 @@ async def test_reasoning_effort_param():
                     "model": OPENAI_MODEL,
                     "messages": TEST_MESSAGES_OPENAI,
                     "stream": False,
-                    "max_tokens": 50,
+                    #"max_tokens": 50,
                     "reasoning_effort": "low"  # 测试 reasoning_effort 参数
                 },
                 headers={"Content-Type": "application/json"}
@@ -496,7 +500,7 @@ async def test_chinese_output_not_escaped():
                     "model": OPENAI_MODEL,
                     "messages": TEST_MESSAGES_CLAUDE,
                     "stream": False,
-                    "max_tokens": 50
+                    #"max_tokens": 50
                 },
                 headers={"Content-Type": "application/json"}
             )
@@ -534,7 +538,7 @@ async def test_single_message_delta():
                     "model": OPENAI_MODEL,
                     "messages": TEST_MESSAGES_CLAUDE,
                     "stream": True,
-                    "max_tokens": 100
+                    #"max_tokens": 100
                 },
                 headers={"Content-Type": "application/json"}
             )
@@ -560,6 +564,55 @@ async def test_single_message_delta():
         return False
 
 
+async def test_format_priority():
+    """测试格式优先选择：下游 OpenAI 时优先选择上游 OpenAI 格式，下游 Claude 时优先选择上游 Claude 格式"""
+    test_name = "Extra: 格式优先选择 [#12]"
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            # Test 1: OpenAI downstream → should prefer OpenAI upstream (no conversion)
+            response_openai = await client.post(
+                f"{BASE_URL}/v1/chat/completions",
+                json={
+                    "model": "deepseek-v4-flash",
+                    "messages": TEST_MESSAGES_OPENAI,
+                    "stream": False,
+                    #"max_tokens": 50
+                },
+                headers={"Content-Type": "application/json"}
+            )
+            response_openai.raise_for_status()
+            data_openai = response_openai.json()
+            
+            # Should have OpenAI format response
+            assert "choices" in data_openai, "OpenAI downstream should return OpenAI format"
+            
+            # Test 2: Claude downstream → should prefer Anthropic upstream (no conversion)
+            response_claude = await client.post(
+                f"{BASE_URL}/v1/messages",
+                json={
+                    "model": "deepseek-v4-flash",
+                    "messages": TEST_MESSAGES_CLAUDE,
+                    "stream": False,
+                    #"max_tokens": 50
+                },
+                headers={"Content-Type": "application/json"}
+            )
+            response_claude.raise_for_status()
+            data_claude = response_claude.json()
+            
+            # Should have Claude format response
+            assert "content" in data_claude, "Claude downstream should return Claude format"
+            assert "type" in data_claude and data_claude["type"] == "message", "Should have Claude message type"
+            
+            print_result(test_name, True, 
+                "OpenAI 下游→OpenAI 格式 ✓, Claude 下游→Claude 格式 ✓"
+            )
+            return True
+    except Exception as e:
+        print_result(test_name, False, str(e))
+        return False
+
+
 # 所有测试用例列表
 ALL_TESTS = [
     test_openai_to_openai_stream,       # #1
@@ -573,6 +626,7 @@ ALL_TESTS = [
     test_reasoning_effort_param,        # #9 - Extra
     test_chinese_output_not_escaped,    # #10 - Extra
     test_single_message_delta,          # #11 - Extra
+    test_format_priority,               # #12 - Extra (新格式优先选择)
 ]
 
 

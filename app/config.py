@@ -48,7 +48,17 @@ class ModelConfig:
     def list_models(self) -> list[str]:
         return list(self._models.keys()) + list(self._aliases.keys())
 
-    def get_upstream_info(self, model_name: str) -> dict:
+    def get_upstream_info(self, model_name: str, downstream_format: str = None) -> dict:
+        """Get upstream model info, preferring format that matches downstream to avoid conversion.
+        
+        Args:
+            model_name: The model name to look up
+            downstream_format: The format of the downstream request ('openai' or 'anthropic')
+                              If provided, prefer the matching upstream format.
+        
+        Returns:
+            dict with provider, upstream_model, api_key, base_url, etc.
+        """
         cfg = self.get_model(model_name)
         if not cfg:
             raise ValueError(f"Unknown model: {model_name}")
@@ -57,11 +67,43 @@ class ModelConfig:
         if not api_key:
             raise ValueError(f"API key not set for model {model_name} (env: {cfg['api_key_env']})")
 
+        # Handle new base_url structure with openai/anthropic sub-keys
+        base_url_cfg = cfg.get("base_url", {})
+        
+        # Determine which format to use
+        if isinstance(base_url_cfg, dict):
+            # New format: base_url has 'openai' and/or 'anthropic' sub-keys
+            openai_url = base_url_cfg.get("openai")
+            anthropic_url = base_url_cfg.get("anthropic")
+            
+            # Prefer format that matches downstream to avoid conversion
+            if downstream_format == "openai" and openai_url:
+                provider = "openai"
+                base_url = openai_url
+            elif downstream_format == "anthropic" and anthropic_url:
+                provider = "anthropic"
+                base_url = anthropic_url
+            # Fallback: use whatever is available
+            elif openai_url:
+                provider = "openai"
+                base_url = openai_url
+            elif anthropic_url:
+                provider = "anthropic"
+                base_url = anthropic_url
+            else:
+                raise ValueError(f"No base_url configured for model {model_name}")
+        else:
+            # Legacy format: base_url is a string, need 'provider' field
+            base_url = base_url_cfg
+            provider = cfg.get("provider")
+            if not provider:
+                raise ValueError(f"No provider specified for model {model_name}")
+
         return {
-            "provider": cfg["provider"],
+            "provider": provider,
             "upstream_model": cfg["upstream_model"],
             "api_key": api_key,
-            "base_url": cfg["base_url"],
+            "base_url": base_url,
             "api_version": cfg.get("api_version", ""),
             "reasoning_effort": cfg.get("reasoning_effort"),
         }

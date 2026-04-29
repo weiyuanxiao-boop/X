@@ -1,82 +1,101 @@
 # Model routing configuration
 # Key: model name exposed to downstream clients
-# Value: provider + upstream model mapping
+# Value: upstream model mapping with base_url supporting multiple formats
+#
+# base_url can be:
+#   1. A string (legacy format) - requires 'provider' field
+#   2. An object with 'openai' and/or 'anthropic' keys - auto-detects provider
+#
+# When base_url has both 'openai' and 'anthropic', the format matching the
+# downstream request is preferred to avoid conversion.
 
 models:
   claude-sonnet-4-20250514:
-    provider: claude
     upstream_model: claude-sonnet-4-20250514
     api_key_env: CLAUDE_API_KEY
-    base_url: "https://api.anthropic.com"
+    base_url:
+      anthropic: "https://api.anthropic.com"
     api_version: "2023-06-01"
 
   claude-opus-4-20250514:
-    provider: claude
     upstream_model: claude-opus-4-20250514
     api_key_env: CLAUDE_API_KEY
-    base_url: "https://api.anthropic.com"
+    base_url:
+      anthropic: "https://api.anthropic.com"
     api_version: "2023-06-01"
 
   gpt-4o:
-    provider: openai
     upstream_model: gpt-4o
     api_key_env: OPENAI_API_KEY
-    base_url: "https://api.openai.com"
+    base_url:
+      openai: "https://api.openai.com"
 
   gpt-4o-mini:
-    provider: openai
     upstream_model: gpt-4o-mini
     api_key_env: OPENAI_API_KEY
-    base_url: "https://api.openai.com"
+    base_url:
+      openai: "https://api.openai.com"
 
-  deepseek-chat:
-    provider: openai
+  # DeepSeek models - support both OpenAI and Anthropic formats
+  deepseek-chat-openai:
     upstream_model: deepseek-chat
     api_key_env: DEEPSEEK_API_KEY
-    base_url: "https://api.deepseek.com"
+    base_url:
+      openai: "https://api.deepseek.com"
+      #anthropic: "https://api.deepseek.com/anthropic" #commented out to enforce OpenAI format
+
+  deepseek-chat:
+    upstream_model: deepseek-chat
+    api_key_env: DEEPSEEK_API_KEY
+    base_url:
+      openai: "https://api.deepseek.com"
+      anthropic: "https://api.deepseek.com/anthropic"
 
   deepseek-coder:
-    provider: openai
     upstream_model: deepseek-coder
     api_key_env: DEEPSEEK_API_KEY
-    base_url: "https://api.deepseek.com"
+    base_url:
+      openai: "https://api.deepseek.com"
+      anthropic: "https://api.deepseek.com/anthropic"
 
   deepseek-v4-pro:
-    provider: openai
     upstream_model: deepseek-v4-pro
     api_key_env: DEEPSEEK_API_KEY
-    base_url: "https://api.deepseek.com"
+    base_url:
+      openai: "https://api.deepseek.com"
+      anthropic: "https://api.deepseek.com/anthropic"
     reasoning_effort: "max"
 
   deepseek-v4-flash:
-    provider: openai
     upstream_model: deepseek-v4-flash
     api_key_env: DEEPSEEK_API_KEY
-    base_url: "https://api.deepseek.com"
+    base_url:
+      openai: "https://api.deepseek.com"
+      anthropic: "https://api.deepseek.com/anthropic"
 
-  deepseek-v4-pro-anthropic:
-    provider: claude
-    upstream_model: deepseek-v4-pro
-    api_key_env: DEEPSEEK_API_KEY
-    base_url: "https://api.deepseek.com/anthropic"
-    reasoning_effort: "max"
-
+  # Legacy format (string base_url with provider)
   qwen3.6-plus:
-    provider: claude
     upstream_model: qwen3.6-plus
+    provider: anthropic
+    api_key_env: QWEN_API_KEY
+    base_url: "https://token-plan.cn-beijing.maas.aliyuncs.com/apps/anthropic"
+
+  qwen3.6-plus-anthropic:
+    upstream_model: qwen3.6-plus
+    provider: anthropic
     api_key_env: QWEN_API_KEY
     base_url: "https://token-plan.cn-beijing.maas.aliyuncs.com/apps/anthropic"
 
   Qwen3.6-Coder:
-    provider: openai
     upstream_model: Qwen3.6-Coder
+    provider: openai
     api_key_env: QWEN_API_KEY
     base_url: "http://192.168.31.20:8000"
 
 # Default model when client doesn't specify
-default_model: deepseek-v4-pro-anthropic
+default_model: deepseek-v4-flash
 
 # Model alias mapping (downstream name → actual model name in models section)
 aliases:
-  cc-coder: qwen3.6-plus    #Qwen3.6-Coder   #     #deepseek-v4-pro-anthropic
+  cc-coder: qwen3.6-plus
 

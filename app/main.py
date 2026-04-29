@@ -55,8 +55,10 @@ def _collect_extra_params(req: ClaudeRequest) -> dict:
 
 @app.post("/v1/messages")
 async def create_message(req: ClaudeRequest, request: Request):
+    """Claude-compatible messages endpoint."""
     model_name = req.model or model_config._default
-    upstream = model_config.get_upstream_info(model_name)
+    # Pass 'anthropic' as downstream_format to prefer Anthropic-compatible upstream
+    upstream = model_config.get_upstream_info(model_name, downstream_format="anthropic")
     client_id = request.client.host if request.client else "unknown"
 
     # Apply default reasoning_effort from config if client doesn't provide one
@@ -84,7 +86,8 @@ async def create_message(req: ClaudeRequest, request: Request):
             text_parts = []
             finish_reason = "end_turn"
             try:
-                if provider == "claude":
+                # 'anthropic' and 'claude' both refer to Claude/Anthropic API format
+                if provider in ("claude", "anthropic"):
                     async for chunk in stream_claude(req, upstream):
                         yield chunk
                         try:
@@ -121,7 +124,8 @@ async def create_message(req: ClaudeRequest, request: Request):
 
     # Non-streaming
     provider = upstream["provider"]
-    if provider == "claude":
+    # 'anthropic' and 'claude' both refer to Claude/Anthropic API format
+    if provider in ("claude", "anthropic"):
         result = await call_claude(req, upstream)
     else:
         result = await call_openai(req, upstream)
@@ -156,7 +160,8 @@ async def health():
 async def create_chat_completion(req: OpenAIRequest, request: Request):
     """OpenAI-compatible chat completions endpoint."""
     model_name = req.model or model_config._default
-    upstream = model_config.get_upstream_info(model_name)
+    # Pass 'openai' as downstream_format to prefer OpenAI-compatible upstream
+    upstream = model_config.get_upstream_info(model_name, downstream_format="openai")
     provider = upstream["provider"]
     client_id = request.client.host if request.client else "unknown"
     
@@ -186,10 +191,12 @@ async def create_chat_completion(req: OpenAIRequest, request: Request):
     
     if req.stream:
         logger.info(f"Starting OpenAI stream request, upstream provider: {provider}")
-        
+
         async def event_stream():
             text_parts = []
             try:
+                # 'openai' provider means native OpenAI format (no conversion needed)
+                # 'anthropic'/'claude' provider means conversion is needed
                 if provider == "openai":
                     # Direct passthrough: OpenAI → OpenAI
                     logger.info("OpenAI → OpenAI: Direct passthrough")
@@ -205,8 +212,8 @@ async def create_chat_completion(req: OpenAIRequest, request: Request):
                                     text_parts.append(evt["choices"][0]["delta"]["content"])
                         except: pass
                 else:
-                    # Convert: Claude → OpenAI
-                    logger.info("Claude → OpenAI: Converting response")
+                    # Convert: Claude/Anthropic → OpenAI
+                    logger.info("Claude/Anthropic → OpenAI: Converting response")
                     # Convert OpenAI request to Claude request
                     claude_req = _openai_to_claude_request(req)
                     async for chunk in stream_claude(claude_req, upstream):
@@ -258,15 +265,15 @@ async def create_chat_completion(req: OpenAIRequest, request: Request):
         return StreamingResponse(event_stream(), media_type="text/event-stream")
     
     # Non-streaming
+    # 'openai' provider means native OpenAI format (no conversion needed)
+    # 'anthropic'/'claude' provider means conversion is needed
     if provider == "openai":
         # Direct passthrough: OpenAI → OpenAI
         logger.info("OpenAI → OpenAI: Direct passthrough")
         result = await call_openai_passthrough(req, upstream)
-
-        logger.info(f"result: {result}")
     else:
-        # Convert: Claude → OpenAI
-        logger.info("Claude → OpenAI: Converting response")
+        # Convert: Claude/Anthropic → OpenAI
+        logger.info("Claude/Anthropic → OpenAI: Converting response")
         claude_req = _openai_to_claude_request(req)
         result = await call_claude(claude_req, upstream)
         result = _claude_to_openai(result)
