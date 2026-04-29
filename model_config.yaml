@@ -80,13 +80,14 @@ models:
       openai: "https://api.deepseek.com"
       anthropic: "https://api.deepseek.com/anthropic"
 
-  # Legacy format (string base_url with provider)
   qwen3.6-plus:
     upstream_model: qwen3.6-plus
-    provider: anthropic
     api_key_env: QWEN_API_KEY
-    base_url: "https://token-plan.cn-beijing.maas.aliyuncs.com/apps/anthropic"
+    base_url: 
+      anthropic: "https://token-plan.cn-beijing.maas.aliyuncs.com/apps/anthropic"
+      openai: "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode"
 
+  # Legacy format (string base_url with provider)
   qwen3.6-plus-anthropic:
     upstream_model: qwen3.6-plus
     provider: anthropic

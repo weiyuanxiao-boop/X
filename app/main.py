@@ -7,6 +7,7 @@ from .models import ClaudeRequest, OpenAIRequest
 from .proxy import (
     call_claude, call_openai, stream_claude, stream_openai,
     call_openai_passthrough, stream_openai_passthrough,
+    call_claude_passthrough, stream_claude_passthrough,
     _openai_to_claude_request, _claude_to_openai
 )
 
@@ -88,7 +89,9 @@ async def create_message(req: ClaudeRequest, request: Request):
             try:
                 # 'anthropic' and 'claude' both refer to Claude/Anthropic API format
                 if provider in ("claude", "anthropic"):
-                    async for chunk in stream_claude(req, upstream):
+                    # Direct passthrough: Claude → Claude
+                    logger.info("Claude → Claude: Direct passthrough")
+                    async for chunk in stream_claude_passthrough(req, upstream):
                         yield chunk
                         try:
                             import json as _json
@@ -126,7 +129,9 @@ async def create_message(req: ClaudeRequest, request: Request):
     provider = upstream["provider"]
     # 'anthropic' and 'claude' both refer to Claude/Anthropic API format
     if provider in ("claude", "anthropic"):
-        result = await call_claude(req, upstream)
+        # Direct passthrough: Claude → Claude
+        logger.info("Claude → Claude: Direct passthrough")
+        result = await call_claude_passthrough(req, upstream)
     else:
         result = await call_openai(req, upstream)
 

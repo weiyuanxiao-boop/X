@@ -109,6 +109,54 @@ def _to_openai_tool_format(tool: dict) -> dict:
 
 # ── Claude provider ──────────────────────────────────────────────
 
+async def call_claude_passthrough(req: ClaudeRequest, upstream: dict) -> dict:
+    """Call Claude upstream and return response as-is (full passthrough).
+    
+    All request fields are passed through unchanged to the upstream API.
+    """
+    url = f"{upstream['base_url']}/v1/messages"
+    headers = {
+        "x-api-key": upstream["api_key"],
+        "anthropic-version": upstream["api_version"],
+        "content-type": "application/json",
+    }
+    # Build request body from all model_dump fields (including extra fields)
+    body = req.model_dump(exclude_none=True, exclude={"model"})
+    body["model"] = upstream["upstream_model"]
+
+    async with httpx.AsyncClient(timeout=120.0) as client:
+        resp = await client.post(url, headers=headers, json=body)
+        if resp.status_code != 200:
+            logger.error(f"Upstream Claude API Error: {resp.status_code}, Response: {resp.text}")
+        resp.raise_for_status()
+        return resp.json()
+
+
+async def stream_claude_passthrough(req: ClaudeRequest, upstream: dict) -> AsyncGenerator[str, None]:
+    """Stream from Claude upstream and yield as-is (full passthrough).
+
+    All request fields are passed through unchanged to the upstream API.
+    All response lines are yielded exactly as received from upstream.
+    """
+    url = f"{upstream['base_url']}/v1/messages"
+    headers = {
+        "x-api-key": upstream["api_key"],
+        "anthropic-version": upstream["api_version"],
+        "content-type": "application/json",
+    }
+    # Build request body from all model_dump fields (including extra fields)
+    body = req.model_dump(exclude_none=True, exclude={"model"})
+    body["model"] = upstream["upstream_model"]
+    body["stream"] = True
+
+    async with httpx.AsyncClient(timeout=120.0) as client:
+        async with client.stream("POST", url, headers=headers, json=body) as resp:
+            resp.raise_for_status()
+            async for line in resp.aiter_lines():
+                # Yield every line exactly as received (including data:, [DONE], etc.)
+                yield line + "\n"
+
+
 async def call_claude(req: ClaudeRequest, upstream: dict) -> dict:
     url = f"{upstream['base_url']}/v1/messages"
     headers = {
@@ -206,28 +254,18 @@ async def stream_claude(req: ClaudeRequest, upstream: dict) -> AsyncGenerator[st
 # ── OpenAI-compatible provider ───────────────────────────────────
 
 async def call_openai_passthrough(req: OpenAIRequest, upstream: dict) -> dict:
-    """Call OpenAI upstream and return response as-is (passthrough mode)."""
+    """Call OpenAI upstream and return response as-is (full passthrough).
+    
+    All request fields are passed through unchanged to the upstream API.
+    """
     url = f"{upstream['base_url']}/v1/chat/completions"
     headers = {
         "Authorization": f"Bearer {upstream['api_key']}",
         "content-type": "application/json",
     }
-    body = {
-        "model": upstream["upstream_model"],
-        "messages": [m.model_dump() if hasattr(m, "model_dump") else m for m in req.messages],
-        "max_tokens": req.max_tokens,
-        "temperature": req.temperature,
-    }
-    if req.top_p != 1.0:
-        body["top_p"] = req.top_p
-    if req.stop:
-        body["stop"] = req.stop if isinstance(req.stop, list) else [req.stop]
-    if req.tools:
-        body["tools"] = req.tools
-    if req.tool_choice:
-        body["tool_choice"] = req.tool_choice
-    if req.reasoning_effort:
-        body["reasoning_effort"] = req.reasoning_effort
+    # Build request body from all model_dump fields (including extra fields)
+    body = req.model_dump(exclude_none=True, exclude={"model"})
+    body["model"] = upstream["upstream_model"]
 
     async with httpx.AsyncClient(timeout=120.0) as client:
         resp = await client.post(url, headers=headers, json=body)
@@ -238,36 +276,27 @@ async def call_openai_passthrough(req: OpenAIRequest, upstream: dict) -> dict:
 
 
 async def stream_openai_passthrough(req: OpenAIRequest, upstream: dict) -> AsyncGenerator[str, None]:
-    """Stream from OpenAI upstream and yield as-is (passthrough mode)."""
+    """Stream from OpenAI upstream and yield as-is (full passthrough).
+
+    All request fields are passed through unchanged to the upstream API.
+    All response lines are yielded exactly as received from upstream.
+    """
     url = f"{upstream['base_url']}/v1/chat/completions"
     headers = {
         "Authorization": f"Bearer {upstream['api_key']}",
         "content-type": "application/json",
     }
-    body = {
-        "model": upstream["upstream_model"],
-        "messages": [m.model_dump() if hasattr(m, "model_dump") else m for m in req.messages],
-        "max_tokens": req.max_tokens,
-        "temperature": req.temperature,
-        "stream": True,
-    }
-    if req.top_p != 1.0:
-        body["top_p"] = req.top_p
-    if req.stop:
-        body["stop"] = req.stop if isinstance(req.stop, list) else [req.stop]
-    if req.tools:
-        body["tools"] = req.tools
-    if req.tool_choice:
-        body["tool_choice"] = req.tool_choice
-    if req.reasoning_effort:
-        body["reasoning_effort"] = req.reasoning_effort
+    # Build request body from all model_dump fields (including extra fields)
+    body = req.model_dump(exclude_none=True, exclude={"model"})
+    body["model"] = upstream["upstream_model"]
+    body["stream"] = True
 
     async with httpx.AsyncClient(timeout=120.0) as client:
         async with client.stream("POST", url, headers=headers, json=body) as resp:
             resp.raise_for_status()
             async for line in resp.aiter_lines():
-                if line and line.startswith("data: "):
-                    yield f"data: {line[6:]}\n\n"
+                # Yield every line exactly as received (including data:, [DONE], etc.)
+                yield line + "\n"
 
 
 async def call_openai(req: ClaudeRequest, upstream: dict) -> dict:

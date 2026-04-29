@@ -1,6 +1,6 @@
 from typing import Any, Literal, Union
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 
 
 class TextContent(BaseModel):
@@ -42,6 +42,8 @@ class Message(BaseModel):
 
 
 class ClaudeRequest(BaseModel):
+    model_config = ConfigDict(extra="allow")  # Allow extra fields for future compatibility
+    
     model: str = ""
     messages: list[Message]
     max_tokens: int = 1024
@@ -90,6 +92,8 @@ class OpenAIMessage(BaseModel):
 
 
 class OpenAIRequest(BaseModel):
+    model_config = ConfigDict(extra="allow")  # Allow extra fields for future compatibility
+    
     model: str = ""
     messages: list[OpenAIMessage]
     max_tokens: int | None = None
