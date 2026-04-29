@@ -4,185 +4,49 @@
 
 ## 最新改动 (2026-04-29)
 
-### 9. 配置重构：支持多 API 格式优先选择
+### 移除交叉协议转换，仅支持同协议透传
 **改动内容**:
-- 去掉 `provider` 字段，改用 `base_url` 的子属性 (`openai`/`anthropic`) 来判断支持的 API 格式
-- 一个模型可同时支持多种 API 格式
-- 优先选择不需要转换的格式（下游 OpenAI 时优先上游 OpenAI，下游 Claude 时优先上游 Anthropic）
-
-**配置格式**:
-```yaml
-models:
-  deepseek-v4-flash:
-    upstream_model: deepseek-v4-flash
-    api_key_env: DEEPSEEK_API_KEY
-    base_url:
-      openai: "https://api.deepseek.com"
-      anthropic: "https://api.deepseek.com/anthropic"
-```
-
-**优先级逻辑**:
-1. 下游 OpenAI + 上游有 openai 地址 → 使用 openai (无需转换)
-2. 下游 Claude + 上游有 anthropic 地址 → 使用 anthropic (无需转换)
-3. 否则使用第一个可用的格式
-
-**文件**:
-- `app/config.py` (`get_upstream_info` 新增 `downstream_format` 参数)
-- `app/main.py` (调用时传入 `downstream_format`)
-- `model_config.yaml` (更新为新格式)
-
-**测试覆盖**:
-- ✅ 测试 #12: 格式优先选择
-
----
-
-## 历史改动
-
-## 改动列表
-
-### 1. 配置文件重构
-**改动内容**:
-- 将 `config.yaml` 重命名为 `model_config.yaml`，只负责模型路由配置
-- 日志配置移动到 `.env` 文件中（`LOG_DIR`, `LOG_LEVEL`）
-
-**文件**:
-- `config.yaml` → `model_config.yaml`
-- `.env` (新增 `LOG_DIR`, `LOG_LEVEL`)
-- `app/config.py` (更新配置加载逻辑)
-
-**测试覆盖**: 手动验证配置加载正常
-
----
-
-### 2. 日志系统改进
-**改动内容**:
-- 使用 Python `logging` 模块替换 `print` 打印错误信息
-- 创建独立的日志记录器（`app`, `proxy`, `conversation`）
-- 日志文件输出到 `logs/` 目录
-
-**文件**:
-- `app/config.py` (新增 `setup_logger()`, `get_logger()`)
-- `app/logger.py` (使用新的日志记录器)
-- `app/proxy.py` (替换 `print` 为 `logger.error()`)
-- `app/main.py` (替换 `print` 为 `logger.info()`)
-
-**测试覆盖**: 手动验证日志文件生成正常
-
----
-
-### 3. OpenAI 兼容端点支持
-**改动内容**:
-- 新增 `/v1/chat/completions` 端点，支持 OpenAI 格式请求
-- 支持流式和非流式响应
-- 根据上游 provider 自动选择透传或转换模式
+- 移除所有 OpenAI ↔ Claude 交叉协议转换代码
+- 下游协议必须与上游协议一致
+- 如果上游模型不支持请求的协议格式，返回 400 错误
 
 **架构**:
-- **OpenAI → OpenAI**: 直接透传，不转换
-- **OpenAI → Claude**: 请求转换 + 响应转换
-- **Claude → OpenAI**: 请求转换 + 响应转换
-- **Claude → Claude**: 直接透传，不转换
+- **OpenAI → OpenAI**: 完全透传
+- **Claude → Claude**: 完全透传
+- ~~OpenAI → Claude~~: **已移除**
+- ~~Claude → OpenAI~~: **已移除**
 
 **文件**:
-- `app/models.py` (新增 `OpenAIRequest`, `OpenAIMessage`)
-- `app/main.py` (新增 `/v1/chat/completions` 端点)
-- `app/proxy.py` (新增 `call_openai_passthrough`, `stream_openai_passthrough`)
+- `app/models.py` (移除转换相关模型)
+- `app/proxy.py` (仅保留 `*_passthrough` 函数)
+- `app/main.py` (移除转换逻辑，添加协议不匹配错误处理)
+- `test_proxy.py` (移除交叉协议测试)
 
 **测试覆盖**:
-- ✅ 测试 #1: OpenAI → OpenAI (Stream)
-- ✅ 测试 #2: OpenAI → OpenAI (Non-Stream)
-- ✅ 测试 #5: Claude → OpenAI (Stream)
-- ✅ 测试 #6: Claude → OpenAI (Non-Stream)
+- ✅ 测试 #1-2: OpenAI → OpenAI (流式/非流式)
+- ✅ 测试 #3-4: Claude → Claude (流式/非流式)
+- ✅ 测试 #14-15: Tool Use (同协议)
 
 ---
 
-### 4. reasoning_effort 参数支持
+### 完全透传 passthrough 调用
 **改动内容**:
-- 支持 `reasoning_effort` 参数（取值：`low`, `medium`, `high`, `xhigh`, `max`）
-- 支持两种格式：`{"reasoning_effort": "high"}` 和 `{"output_config": {"effort": "high"}}`
-- 支持在 `model_config.yaml` 中配置默认值
-- 根据上游协议自动转换格式
-
-**优先级**:
-1. 客户端请求参数（最高）
-2. `model_config.yaml` 配置（默认值）
+- `call_*_passthrough` 和 `stream_*_passthrough` 完全透传所有参数
+- 使用 `model_dump(exclude_none=True)` 导出所有字段（包括 extra 字段）
+- 流式响应原样转发每一行（包括 `data:`, `[DONE]` 等）
 
 **文件**:
-- `app/models.py` (新增 `reasoning_effort`, `output_config` 字段)
-- `app/proxy.py` (转换逻辑)
-- `app/config.py` (加载 `reasoning_effort` 配置)
-- `app/main.py` (应用默认值)
-
-**测试覆盖**:
-- ✅ 测试 #9: reasoning_effort 参数测试
+- `app/proxy.py` (passthrough 函数简化)
 
 ---
 
-### 5. thinking/reasoning_content 正确转换
+### 去掉参数验证（允许额外字段）
 **改动内容**:
-- OpenAI 上游返回的 `reasoning_content` 正确转换为 Claude 格式的 `thinking` 块
-- Claude 上游返回的 `thinking` 正确转换为 OpenAI 格式的 `reasoning_content` 字段
-- 流式和非流式都支持
+- `ClaudeRequest` 和 `OpenAIRequest` 使用 `ConfigDict(extra="allow")`
+- 可以接收任何未来可能添加的参数而不会报错
 
 **文件**:
-- `app/proxy.py` (`_openai_to_claude`, `_stream_openai_to_claude`, `_claude_to_openai`)
-
-**测试覆盖**:
-- ✅ 测试 #5: Claude → OpenAI (Stream) - 包含 `thinking_delta` 检查
-- ✅ 测试 #6: Claude → OpenAI (Non-Stream) - 包含 `thinking` 块检查
-
----
-
-### 6. 中文输出不被 Unicode 转义
-**改动内容**:
-- 所有 `json.dumps()` 调用添加 `ensure_ascii=False` 参数
-- 中文字符正常显示，不被转义为 `\u4e00` 格式
-
-**文件**:
-- `app/proxy.py` (`_stream_openai_to_claude` 函数)
-- `app/main.py` (OpenAI 端点流式处理)
-
-**测试覆盖**:
-- ✅ 测试 #10: 中文输出不被转义
-- ✅ 测试 #1: OpenAI → OpenAI (Stream) - 包含中文检查
-
----
-
-### 7. 修复重复 message_delta
-**改动内容**:
-- 修复流式响应中返回两次 `stop_reason` / `message_delta` 的问题
-- 确保每个流式响应只发送一次 `message_delta`
-
-**文件**:
-- `app/proxy.py` (`_stream_openai_to_claude` 函数)
-
-**测试覆盖**:
-- ✅ 测试 #11: 单次 message_delta
-
----
-
-### 8. 完整 Claude 流式格式模拟
-**改动内容**:
-- Claude → OpenAI 流式转换时，模拟完整的 Claude 原生流式格式
-- 包含所有必要的事件类型
-
-**完整流程**:
-```
-message_start
-  ├─ content_block_start (index 0, thinking)
-  ├─ content_block_delta (thinking_delta) × N
-  ├─ content_block_stop (index 0)
-  ├─ content_block_start (index 1, text)
-  ├─ content_block_delta (text_delta) × N
-  ├─ content_block_stop (index 1)
-  ├─ message_delta (stop_reason + usage)
-  └─ message_stop
-```
-
-**文件**:
-- `app/proxy.py` (`_stream_openai_to_claude` 函数重构)
-
-**测试覆盖**:
-- ✅ 测试 #5: Claude → OpenAI (Stream) - 包含完整格式检查
+- `app/models.py`
 
 ---
 
@@ -192,16 +56,20 @@ message_start
 |---|---------|---------|
 | 1 | OpenAI → OpenAI (Stream) | OpenAI 格式流式响应，中文正常显示 |
 | 2 | OpenAI → OpenAI (Non-Stream) | OpenAI 格式非流式响应 |
-| 3 | OpenAI → Claude (Stream) | Claude 格式流式响应，包含 reasoning |
-| 4 | OpenAI → Claude (Non-Stream) | Claude 格式非流式响应，包含 reasoning |
-| 5 | Claude → OpenAI (Stream) | **完整 Claude 流式格式模拟**, thinking_delta |
-| 6 | Claude → OpenAI (Non-Stream) | Claude 格式响应，包含 thinking 块 |
-| 7 | Claude → Claude (Stream) | Claude 格式流式透传 |
-| 8 | Claude → Claude (Non-Stream) | Claude 格式非流式透传 |
-| 9 | reasoning_effort 参数测试 | 参数正常传递 |
-| 10 | 中文输出不被转义 | ensure_ascii=False 验证 |
-| 11 | 单次 message_delta | 不重复返回 stop_reason |
-| 12 | 格式优先选择 | 下游 OpenAI 优先上游 OpenAI，下游 Claude 优先上游 Anthropic |
+| 3 | Claude → Claude (Stream) | Claude 格式流式响应 |
+| 4 | Claude → Claude (Non-Stream) | Claude 格式非流式响应 |
+| 5 | reasoning_effort 参数测试 | 参数正常传递 |
+| 6 | 中文输出不被转义 | ensure_ascii=False 验证 |
+| 7 | 单次 message_delta | 不重复返回 stop_reason |
+| 8 | 格式优先选择 | 下游 OpenAI 优先上游 OpenAI，下游 Claude 优先上游 Anthropic |
+| 9 | Claude Content: string | string 格式 content |
+| 10 | Claude Content: array[text] | array[text] 格式 content |
+| 11 | Claude Content: thinking | thinking 类型 content |
+| 12 | Claude Content: tool_use | tool_use 类型 content |
+| 13 | Claude Content: mixed | 混合格式支持 |
+| 14 | Tool Use: OpenAI → OpenAI | OpenAI 格式工具调用 |
+| 15 | Tool Use: Claude → Claude | Claude 格式工具调用 |
+| 16 | Unsupported Protocol Error | 不支持的协议返回 400 错误 |
 
 ## 运行测试
 
@@ -210,8 +78,8 @@ message_start
 python test_proxy.py
 
 # 运行特定测试
-python test_proxy.py 5        # 只运行测试 #5
-python test_proxy.py 5,9,11   # 运行多个测试
+python test_proxy.py 1        # 只运行测试 #1
+python test_proxy.py 1,3,5    # 运行多个测试
 
 # 调试模式
 python test_proxy.py 5 --debug
@@ -222,6 +90,6 @@ python test_proxy.py --list
 
 ## 测试状态
 
-✅ **12/12 测试通过 (100.0%)**
+✅ **15/15 测试通过 (100.0%)**
 
-所有关键改动都有对应的测试验证。
+所有核心功能都有对应的测试验证。

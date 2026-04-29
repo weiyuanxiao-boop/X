@@ -6,7 +6,8 @@
       "Bash(netstat *)",
       "Bash(findstr *)",
       "Bash(taskkill *)",
-      "Bash(type *)"
+      "Bash(type *)",
+      "Bash(dir *)"
     ]
   },
   "$version": 3

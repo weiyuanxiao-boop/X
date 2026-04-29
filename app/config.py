@@ -50,14 +50,18 @@ class ModelConfig:
 
     def get_upstream_info(self, model_name: str, downstream_format: str = None) -> dict:
         """Get upstream model info, preferring format that matches downstream to avoid conversion.
-        
+
         Args:
             model_name: The model name to look up
             downstream_format: The format of the downstream request ('openai' or 'anthropic')
                               If provided, prefer the matching upstream format.
-        
+                              If the requested format is not available, raise ValueError.
+
         Returns:
             dict with provider, upstream_model, api_key, base_url, etc.
+        
+        Raises:
+            ValueError: If the model doesn't support the requested downstream_format
         """
         cfg = self.get_model(model_name)
         if not cfg:
@@ -69,21 +73,27 @@ class ModelConfig:
 
         # Handle new base_url structure with openai/anthropic sub-keys
         base_url_cfg = cfg.get("base_url", {})
-        
+
         # Determine which format to use
         if isinstance(base_url_cfg, dict):
             # New format: base_url has 'openai' and/or 'anthropic' sub-keys
             openai_url = base_url_cfg.get("openai")
             anthropic_url = base_url_cfg.get("anthropic")
-            
-            # Prefer format that matches downstream to avoid conversion
-            if downstream_format == "openai" and openai_url:
-                provider = "openai"
-                base_url = openai_url
-            elif downstream_format == "anthropic" and anthropic_url:
-                provider = "anthropic"
-                base_url = anthropic_url
-            # Fallback: use whatever is available
+
+            # Prefer format that matches downstream
+            if downstream_format == "openai":
+                if openai_url:
+                    provider = "openai"
+                    base_url = openai_url
+                else:
+                    raise ValueError(f"Model '{model_name}' does not support OpenAI API format (only supports: {'anthropic' if anthropic_url else 'none'})")
+            elif downstream_format == "anthropic":
+                if anthropic_url:
+                    provider = "anthropic"
+                    base_url = anthropic_url
+                else:
+                    raise ValueError(f"Model '{model_name}' does not support Anthropic/Claude API format (only supports: {'openai' if openai_url else 'none'})")
+            # No downstream_format specified: use whatever is available
             elif openai_url:
                 provider = "openai"
                 base_url = openai_url

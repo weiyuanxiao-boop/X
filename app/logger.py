@@ -39,9 +39,19 @@ class ConversationLogger:
 
     def log_request(
         self, downstream_model: str, upstream_model: str,
-        messages: list[dict], client_id: str = "",
-        extra_params: dict | None = None,
+        request_data: dict, client_id: str = "",
     ) -> str:
+        """Log request with all parameters as-is.
+        
+        Args:
+            downstream_model: The downstream model name
+            upstream_model: The upstream model name
+            request_data: The complete request data (all parameters preserved)
+            client_id: Client identifier
+        
+        Returns:
+            Conversation ID
+        """
         conv_id = str(uuid.uuid4())
         entry = {
             "id": conv_id,
@@ -49,8 +59,7 @@ class ConversationLogger:
             "client_id": client_id,
             "downstream_model": downstream_model,
             "upstream_model": upstream_model,
-            "messages": messages,
-            "extra_params": extra_params or {},
+            "request": request_data,  # Store complete request as-is
             "response": None,
         }
         path = self._today_file(downstream_model, upstream_model)
@@ -60,20 +69,29 @@ class ConversationLogger:
         self._logger.debug(f"Logged request {conv_id} for {downstream_model} -> {upstream_model}")
         return conv_id
 
-    def log_response(self, downstream_model: str, upstream_model: str, conv_id: str, response_text: str, usage: dict, finish_reason: str):
+    def log_response(
+        self, downstream_model: str, upstream_model: str, 
+        conv_id: str, response_data: dict,
+    ):
+        """Log response with all parameters as-is.
+        
+        Args:
+            downstream_model: The downstream model name
+            upstream_model: The upstream model name
+            conv_id: Conversation ID to update
+            response_data: The complete response data (all parameters preserved)
+        """
         path = self._today_file(downstream_model, upstream_model)
         logs = self._read_log(path)
         for entry in logs:
             if entry["id"] == conv_id:
                 entry["response"] = {
-                    "text": response_text,
-                    "usage": usage,
-                    "finish_reason": finish_reason,
+                    **response_data,  # Store complete response as-is
                     "timestamp": datetime.now(timezone.utc).isoformat(),
                 }
                 break
         self._write_log(path, logs)
-        self._logger.debug(f"Logged response for {conv_id}, finish_reason: {finish_reason}")
+        self._logger.debug(f"Logged response for {conv_id}")
 
 
 logger = ConversationLogger()

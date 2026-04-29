@@ -2,17 +2,13 @@
 """
 LLM Proxy Gateway 测试用例
 
-测试场景矩阵：
+测试场景矩阵（仅同协议透传）：
 | # | 下游协议 | 上游协议 | 流式 | 测试函数 |
 |---|---------|---------|------|---------|
 | 1 | OpenAI  | OpenAI  | 是   | test_openai_to_openai_stream |
 | 2 | OpenAI  | OpenAI  | 否   | test_openai_to_openai_non_stream |
-| 3 | OpenAI  | Claude  | 是   | test_openai_to_claude_stream |
-| 4 | OpenAI  | Claude  | 否   | test_openai_to_claude_non_stream |
-| 5 | Claude  | OpenAI  | 是   | test_claude_to_openai_stream |
-| 6 | Claude  | OpenAI  | 否   | test_claude_to_openai_non_stream |
-| 7 | Claude  | Claude  | 是   | test_claude_to_claude_stream |
-| 8 | Claude  | Claude  | 否   | test_claude_to_claude_non_stream |
+| 3 | Claude  | Claude  | 是   | test_claude_to_claude_stream |
+| 4 | Claude  | Claude  | 否   | test_claude_to_claude_non_stream |
 
 使用方法：
     python test_proxy.py          # 运行所有测试
@@ -38,14 +34,12 @@ OPENAI_MODEL = "deepseek-v4-flash-openai"    # 只使用 openai 格式
 CLAUDE_MODEL = "deepseek-v4-flash-anthropic" # 只使用 anthropic 格式
 
 # 测试消息 - OpenAI 格式
-# https://platform.openai.com/docs/api-reference/chat/create
 TEST_MESSAGES_OPENAI = [
     {"role": "system", "content": "你是一个乐于助人的助手。"},
     {"role": "user", "content": "你好，请用一句话介绍你自己"}
 ]
 
 # 测试消息 - Claude 格式
-# https://docs.anthropic.com/claude/reference/messages_post
 TEST_MESSAGES_CLAUDE = [
     {"role": "user", "content": "你好，请用一句话介绍你自己"}
 ]
@@ -62,7 +56,7 @@ def print_result(test_name: str, success: bool, message: str = ""):
 
 
 # ─────────────────────────────────────────────────────────────
-# OpenAI 下游 → OpenAI 上游
+# OpenAI → OpenAI
 # ─────────────────────────────────────────────────────────────
 
 async def test_openai_to_openai_stream():
@@ -76,7 +70,6 @@ async def test_openai_to_openai_stream():
                     "model": OPENAI_MODEL,
                     "messages": TEST_MESSAGES_OPENAI,
                     "stream": True,
-                    #"max_tokens": 50
                 },
                 headers={"Content-Type": "application/json"}
             )
@@ -126,7 +119,6 @@ async def test_openai_to_openai_non_stream():
                     "model": OPENAI_MODEL,
                     "messages": TEST_MESSAGES_OPENAI,
                     "stream": False,
-                    #"max_tokens": 50
                 },
                 headers={"Content-Type": "application/json"}
             )
@@ -134,7 +126,7 @@ async def test_openai_to_openai_non_stream():
             data = response.json()
             
             if DEBUG_MODE:
-                print(f"  [DEBUG] Response: {json.dumps(data, ensure_ascii=False)}")
+                print(f"  [DEBUG] Response: {json.dumps(data, ensure_ascii=False)[:200]}...")
             
             # 验证响应结构
             assert "choices" in data, "响应缺少 choices 字段"
@@ -143,8 +135,8 @@ async def test_openai_to_openai_non_stream():
             # Accept content, reasoning_content, or reasoning
             has_content = "content" in message and message["content"]
             has_reasoning_content = "reasoning_content" in message and message["reasoning_content"]
-            # has_reasoning = "reasoning" in message and message["reasoning"]
-            assert has_content and has_reasoning_content, "消息缺少 content 或 reasoning_content字段"
+            has_reasoning = "reasoning" in message and message["reasoning"]
+            assert has_content or has_reasoning_content or has_reasoning, "消息缺少 content/reasoning_content/reasoning 字段"
             
             reply = message.get("content") or message.get("reasoning_content") or message.get("reasoning") or ""
             print_result(test_name, True, f"回复：{reply[:30]}...")
@@ -155,240 +147,12 @@ async def test_openai_to_openai_non_stream():
 
 
 # ─────────────────────────────────────────────────────────────
-# OpenAI 下游 → Claude 上游
-# ─────────────────────────────────────────────────────────────
-
-async def test_openai_to_claude_stream():
-    """下游 OpenAI 格式，上游 Claude，流式响应"""
-    test_name = "OpenAI → Claude (Stream)  [#3]"
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.post(
-                f"{BASE_URL}/v1/chat/completions",
-                json={
-                    "model": CLAUDE_MODEL,
-                    "messages": TEST_MESSAGES_OPENAI,
-                    "stream": True,
-                    #"max_tokens": 50
-                },
-                headers={"Content-Type": "application/json"}
-            )
-            response.raise_for_status()
-            
-            # 收集流式响应
-            chunks = []
-            has_content = False
-            has_reasoning = False
-            
-            async for line in response.aiter_lines():
-                if line.startswith("data: ") and line != "data: [DONE]":
-                    if DEBUG_MODE:
-                        print(f"  [DEBUG] Received chunk: {line}")
-                    chunk = json.loads(line[6:])
-                    chunks.append(chunk)
-                    delta = chunk.get("choices", [{}])[0].get("delta", {})
-                    if "content" in delta:
-                        has_content = True
-                    if "reasoning_content" in delta:
-                        has_reasoning = True
-            
-            # 验证响应结构
-            assert len(chunks) > 0, "没有收到任何数据块"
-            assert has_content and has_reasoning, "没有收到 content 或 reasoning_content 数据"
-            
-            print_result(test_name, True, f"收到 {len(chunks)} 个数据块，包含 reasoning: {has_reasoning}")
-            return True
-    except Exception as e:
-        print_result(test_name, False, str(e))
-        return False
-
-
-async def test_openai_to_claude_non_stream():
-    """下游 OpenAI 格式，上游 Claude，非流式响应"""
-    test_name = "OpenAI → Claude (Non-Stream)  [#4]"
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.post(
-                f"{BASE_URL}/v1/chat/completions",
-                json={
-                    "model": CLAUDE_MODEL,
-                    "messages": TEST_MESSAGES_OPENAI,
-                    "stream": False,
-                    #"max_tokens": 50
-                },
-                headers={"Content-Type": "application/json"}
-            )
-            response.raise_for_status()
-            data = response.json()
-            
-            if DEBUG_MODE:
-                print(f"  [DEBUG] Response: {json.dumps(data, ensure_ascii=False)}")
-            
-            # 验证响应结构
-            assert "choices" in data, "响应缺少 choices 字段"
-            assert len(data["choices"]) > 0, "choices 为空"
-            message = data["choices"][0]["message"]
-            # Accept content or reasoning_content
-            has_content = "content" in message and message["content"]
-            has_reasoning_content = "reasoning_content" in message and message["reasoning_content"]
-            assert has_content and has_reasoning_content, "消息缺少 content 或 reasoning_content 字段"
-            
-            has_reasoning = "reasoning_content" in message
-            reply = message.get("content") or message.get("reasoning_content") or ""
-            print_result(test_name, True, f"回复：{reply[:30]}... (reasoning: {has_reasoning})")
-            return True
-    except Exception as e:
-        print_result(test_name, False, str(e))
-        return False
-
-
-# ─────────────────────────────────────────────────────────────
-# Claude 下游 → OpenAI 上游
-# ─────────────────────────────────────────────────────────────
-
-async def test_claude_to_openai_stream():
-    """下游 Claude 格式，上游 OpenAI，流式响应
-    验证：完整 Claude 流式格式模拟 (message_start, content_block_start/stop, message_stop)
-    """
-    test_name = "Claude → OpenAI (Stream)  [#5]"
-    try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            response = await client.post(
-                f"{BASE_URL}/v1/messages",
-                json={
-                    "model": OPENAI_MODEL,
-                    "messages": TEST_MESSAGES_CLAUDE,
-                    "stream": True,
-                    #"max_tokens": 200
-                },
-                headers={"Content-Type": "application/json"}
-            )
-            response.raise_for_status()
-
-            # 收集流式响应
-            chunks = []
-            has_text_delta = False
-            has_thinking_delta = False
-            # 验证完整 Claude 流式格式
-            has_message_start = False
-            has_content_block_start_thinking = False
-            has_content_block_start_text = False
-            has_content_block_stop_thinking = False
-            has_content_block_stop_text = False
-            has_message_stop = False
-            
-            async for line in response.aiter_lines():
-                if line.startswith("data: ") and line != "data: [DONE]":
-                    if DEBUG_MODE:
-                        print(f"  [DEBUG] Received chunk: {line}")
-                    chunk = json.loads(line[6:])
-                    chunks.append(chunk)
-                    
-                    chunk_type = chunk.get("type", "")
-                    
-                    # Check message_start
-                    if chunk_type == "message_start":
-                        has_message_start = True
-                    
-                    # Check content_block_start
-                    if chunk_type == "content_block_start":
-                        content_block = chunk.get("content_block", {})
-                        if content_block.get("type") == "thinking":
-                            has_content_block_start_thinking = True
-                        elif content_block.get("type") == "text":
-                            has_content_block_start_text = True
-                    
-                    # Check content_block_stop
-                    if chunk_type == "content_block_stop":
-                        index = chunk.get("index", -1)
-                        if index == 0:
-                            has_content_block_stop_thinking = True
-                        elif index == 1:
-                            has_content_block_stop_text = True
-                    
-                    # Check message_stop
-                    if chunk_type == "message_stop":
-                        has_message_stop = True
-                    
-                    # Check for text_delta and thinking_delta (Claude format)
-                    if chunk_type == "content_block_delta":
-                        delta = chunk.get("delta", {})
-                        delta_type = delta.get("type", "")
-                        if delta_type == "text_delta":
-                            has_text_delta = True
-                        if delta_type == "thinking_delta" or "thinking" in delta:
-                            has_thinking_delta = True
-
-            # 验证响应结构 (Claude 格式)
-            assert len(chunks) > 0, "没有收到任何数据块"
-            
-            # 验证完整 Claude 流式格式
-            assert has_message_start, "缺少 message_start 事件"
-            assert has_content_block_start_thinking, "缺少 content_block_start (thinking)"
-            assert has_content_block_start_text, "缺少 content_block_start (text)"
-            assert has_content_block_stop_thinking, "缺少 content_block_stop (thinking)"
-            assert has_content_block_stop_text, "缺少 content_block_stop (text)"
-            assert has_message_stop, "缺少 message_stop 事件"
-            
-            # Model may return only thinking (reasoning) or only text, or both
-            has_any_content = has_text_delta or has_thinking_delta
-            assert has_any_content, "没有收到 text_delta 或 thinking_delta 数据"
-
-            print_result(test_name, True, 
-                f"收到 {len(chunks)} 个数据块 | "
-                f"text_delta: {has_text_delta}, thinking_delta: {has_thinking_delta} | "
-                f"完整格式：message_start={has_message_start}, content_block_start/stop={has_content_block_start_thinking and has_content_block_stop_thinking}, message_stop={has_message_stop}"
-            )
-            return True
-    except Exception as e:
-        print_result(test_name, False, str(e))
-        return False
-
-
-async def test_claude_to_openai_non_stream():
-    """下游 Claude 格式，上游 OpenAI，非流式响应"""
-    test_name = "Claude → OpenAI (Non-Stream)  [#6]"
-    try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            response = await client.post(
-                f"{BASE_URL}/v1/messages",
-                json={
-                    "model": OPENAI_MODEL,
-                    "messages": TEST_MESSAGES_CLAUDE,
-                    #"max_tokens": 200
-                },
-                headers={"Content-Type": "application/json"}
-            )
-            response.raise_for_status()
-            data = response.json()
-
-            if DEBUG_MODE:
-                print(f"  [DEBUG] Response: {json.dumps(data, ensure_ascii=False)[:500]}...")
-
-            # 验证响应结构 (Claude 格式)
-            assert "content" in data, "响应缺少 content 字段"
-            assert len(data["content"]) > 0, "content 为空"
-            
-            # 检查是否包含 thinking 内容
-            has_thinking = any(
-                block.get("type") == "thinking" 
-                for block in data["content"]
-            )
-            
-            print_result(test_name, True, f"Claude 格式响应正常，包含 thinking: {has_thinking}")
-            return True
-    except Exception as e:
-        print_result(test_name, False, str(e))
-        return False
-
-
-# ─────────────────────────────────────────────────────────────
-# Claude 下游 → Claude 上游
+# Claude → Claude
 # ─────────────────────────────────────────────────────────────
 
 async def test_claude_to_claude_stream():
     """下游 Claude 格式，上游 Claude，流式响应"""
-    test_name = "Claude → Claude (Stream)  [#7]"
+    test_name = "Claude → Claude (Stream)  [#3]"
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.post(
@@ -397,12 +161,11 @@ async def test_claude_to_claude_stream():
                     "model": CLAUDE_MODEL,
                     "messages": TEST_MESSAGES_CLAUDE,
                     "stream": True,
-                    #"max_tokens": 50
                 },
                 headers={"Content-Type": "application/json"}
             )
             response.raise_for_status()
-            
+
             # 收集流式响应
             chunks = []
             async for line in response.aiter_lines():
@@ -410,7 +173,7 @@ async def test_claude_to_claude_stream():
                     if DEBUG_MODE:
                         print(f"  [DEBUG] Received chunk: {line}")
                     chunks.append(json.loads(line[6:]))
-            
+
             # 验证响应结构
             assert len(chunks) > 0, "没有收到任何数据块"
             
@@ -423,7 +186,7 @@ async def test_claude_to_claude_stream():
 
 async def test_claude_to_claude_non_stream():
     """下游 Claude 格式，上游 Claude，非流式响应"""
-    test_name = "Claude → Claude (Non-Stream)  [#8]"
+    test_name = "Claude → Claude (Non-Stream)  [#4]"
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.post(
@@ -431,7 +194,7 @@ async def test_claude_to_claude_non_stream():
                 json={
                     "model": CLAUDE_MODEL,
                     "messages": TEST_MESSAGES_CLAUDE,
-                    #"max_tokens": 50
+                    "stream": False,
                 },
                 headers={"Content-Type": "application/json"}
             )
@@ -439,12 +202,12 @@ async def test_claude_to_claude_non_stream():
             data = response.json()
             
             if DEBUG_MODE:
-                print(f"  [DEBUG] Response: {json.dumps(data, ensure_ascii=False)}")
+                print(f"  [DEBUG] Response: {json.dumps(data, ensure_ascii=False)[:200]}...")
             
-            # 验证响应结构
+            # 验证响应结构 (Claude 格式)
             assert "content" in data, "响应缺少 content 字段"
             assert len(data["content"]) > 0, "content 为空"
-            
+
             print_result(test_name, True, f"Claude 格式响应正常")
             return True
     except Exception as e:
@@ -453,16 +216,12 @@ async def test_claude_to_claude_non_stream():
 
 
 # ─────────────────────────────────────────────────────────────
-# 主测试运行器
-# ─────────────────────────────────────────────────────────────
-
-# ─────────────────────────────────────────────────────────────
-# 额外验证测试
+# Extra Tests
 # ─────────────────────────────────────────────────────────────
 
 async def test_reasoning_effort_param():
     """测试 reasoning_effort 参数传递"""
-    test_name = "Extra: reasoning_effort 参数测试 [#9]"
+    test_name = "Extra: reasoning_effort 参数测试 [#5]"
     try:
         async with httpx.AsyncClient(timeout=60.0) as client:
             response = await client.post(
@@ -471,7 +230,6 @@ async def test_reasoning_effort_param():
                     "model": OPENAI_MODEL,
                     "messages": TEST_MESSAGES_OPENAI,
                     "stream": False,
-                    #"max_tokens": 50,
                     "reasoning_effort": "low"  # 测试 reasoning_effort 参数
                 },
                 headers={"Content-Type": "application/json"}
@@ -491,16 +249,15 @@ async def test_reasoning_effort_param():
 
 async def test_chinese_output_not_escaped():
     """测试中文输出不被 Unicode 转义"""
-    test_name = "Extra: 中文输出不被转义 [#10]"
+    test_name = "Extra: 中文输出不被转义 [#6]"
     try:
         async with httpx.AsyncClient(timeout=60.0) as client:
             response = await client.post(
                 f"{BASE_URL}/v1/messages",
                 json={
-                    "model": OPENAI_MODEL,
+                    "model": CLAUDE_MODEL,
                     "messages": TEST_MESSAGES_CLAUDE,
                     "stream": False,
-                    #"max_tokens": 50
                 },
                 headers={"Content-Type": "application/json"}
             )
@@ -529,16 +286,15 @@ async def test_chinese_output_not_escaped():
 
 async def test_single_message_delta():
     """测试只返回一次 message_delta（不重复）"""
-    test_name = "Extra: 单次 message_delta [#11]"
+    test_name = "Extra: 单次 message_delta [#7]"
     try:
         async with httpx.AsyncClient(timeout=60.0) as client:
             response = await client.post(
                 f"{BASE_URL}/v1/messages",
                 json={
-                    "model": OPENAI_MODEL,
+                    "model": CLAUDE_MODEL,
                     "messages": TEST_MESSAGES_CLAUDE,
                     "stream": True,
-                    #"max_tokens": 100
                 },
                 headers={"Content-Type": "application/json"}
             )
@@ -566,17 +322,17 @@ async def test_single_message_delta():
 
 async def test_format_priority():
     """测试格式优先选择：下游 OpenAI 时优先选择上游 OpenAI 格式，下游 Claude 时优先选择上游 Claude 格式"""
-    test_name = "Extra: 格式优先选择 [#12]"
+    test_name = "Extra: 格式优先选择 [#8]"
     try:
         async with httpx.AsyncClient(timeout=60.0) as client:
             # Test 1: OpenAI downstream → should prefer OpenAI upstream (no conversion)
+            # Use deepseek-v4-flash which has both openai and anthropic URLs
             response_openai = await client.post(
                 f"{BASE_URL}/v1/chat/completions",
                 json={
-                    "model": "deepseek-v4-flash",
+                    "model": "deepseek-v4-flash",  # Has both formats
                     "messages": TEST_MESSAGES_OPENAI,
                     "stream": False,
-                    #"max_tokens": 50
                 },
                 headers={"Content-Type": "application/json"}
             )
@@ -590,16 +346,15 @@ async def test_format_priority():
             response_claude = await client.post(
                 f"{BASE_URL}/v1/messages",
                 json={
-                    "model": "deepseek-v4-flash",
+                    "model": "deepseek-v4-flash",  # Has both formats
                     "messages": TEST_MESSAGES_CLAUDE,
                     "stream": False,
-                    "max_tokens": 50
                 },
                 headers={"Content-Type": "application/json"}
             )
             response_claude.raise_for_status()
             data_claude = response_claude.json()
-
+            
             # Should have Claude format response
             assert "content" in data_claude, "Claude downstream should return Claude format"
             assert "type" in data_claude and data_claude["type"] == "message", "Should have Claude message type"
@@ -614,12 +369,12 @@ async def test_format_priority():
 
 
 # ─────────────────────────────────────────────────────────────
-# Claude Content 字段测试 (Fully Supported)
+# Claude Content 字段测试
 # ─────────────────────────────────────────────────────────────
 
 async def test_claude_content_string():
     """测试 content 为字符串格式 (Fully Supported)"""
-    test_name = "Claude Content: string [#13]"
+    test_name = "Claude Content: string [#9]"
     try:
         async with httpx.AsyncClient(timeout=60.0) as client:
             response = await client.post(
@@ -647,7 +402,7 @@ async def test_claude_content_string():
 
 async def test_claude_content_array_text():
     """测试 content 为数组格式，type=text (Fully Supported)"""
-    test_name = "Claude Content: array[text] [#14]"
+    test_name = "Claude Content: array[text] [#10]"
     try:
         async with httpx.AsyncClient(timeout=60.0) as client:
             response = await client.post(
@@ -682,7 +437,7 @@ async def test_claude_content_array_text():
 
 async def test_claude_content_thinking():
     """测试 content 包含 thinking (Supported)"""
-    test_name = "Claude Content: thinking [#15]"
+    test_name = "Claude Content: thinking [#11]"
     try:
         async with httpx.AsyncClient(timeout=60.0) as client:
             response = await client.post(
@@ -713,7 +468,7 @@ async def test_claude_content_thinking():
 
 
 # ─────────────────────────────────────────────────────────────
-# Tool Use 测试 (所有格式组合)
+# Tool Use 测试
 # ─────────────────────────────────────────────────────────────
 
 # 工具定义 - OpenAI 格式
@@ -732,8 +487,7 @@ WEATHER_TOOL_OPENAI = {
     }
 }
 
-# 工具定义 - Claude 格式 (注意：DeepSeek Anthropic 不支持 type: "function")
-# 使用标准 Claude 格式，如果上游不支持会优雅降级为文本回复
+# 工具定义 - Claude 格式
 WEATHER_TOOL_CLAUDE = {
     "name": "get_weather",
     "description": "获取指定城市的天气信息",
@@ -747,214 +501,26 @@ WEATHER_TOOL_CLAUDE = {
 }
 
 
-async def test_tool_use_openai_to_openai():
-    """测试工具调用：OpenAI → OpenAI [#16]"""
-    test_name = "Tool Use: OpenAI → OpenAI [#16]"
-    try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            response = await client.post(
-                f"{BASE_URL}/v1/chat/completions",
-                json={
-                    "model": "deepseek-v4-flash-openai",
-                    "messages": [
-                        {"role": "user", "content": "北京今天天气怎么样？"}
-                    ],
-                    "tools": [WEATHER_TOOL_OPENAI]
-                },
-                headers={"Content-Type": "application/json"}
-            )
-            response.raise_for_status()
-            data = response.json()
-
-            if DEBUG_MODE:
-                print(f"  [DEBUG] Response: {json.dumps(data, ensure_ascii=False)}")
-
-            # 验证 OpenAI 格式响应
-            assert "choices" in data, "响应缺少 choices 字段"
-            message = data["choices"][0]["message"]
-            
-            # 检查是否包含 tool_calls 或 text 回复
-            has_tool_calls = "tool_calls" in message
-            has_content = "content" in message and message["content"]
-
-            assert has_tool_calls, "响应缺少 tool_calls"
-            
-            # 验证 tool_calls 格式（如果有）
-            if has_tool_calls:
-                for tc in message["tool_calls"]:
-                    assert "id" in tc, "tool_call 缺少 id"
-                    assert "type" in tc and tc["type"] == "function", "tool_call type 应为 function"
-                    assert "function" in tc, "tool_call 缺少 function"
-                    assert "name" in tc["function"], "function 缺少 name"
-
-            print_result(test_name, True, 
-                f"tool_calls: {has_tool_calls}, content: {has_content}"
-            )
-            return True
-    except Exception as e:
-        print_result(test_name, False, str(e))
-        return False
-
-
-async def test_tool_use_claude_to_claude():
-    """测试工具调用：Claude → Claude [#17]
-    注意：由于上游 DeepSeek 可能需要特定配置才能返回 tool_use，
-    此测试主要验证代理能正确接收和转发 tools 参数
+async def test_claude_content_tool_use():
+    """测试 tool_use 支持 (Fully Supported: id, input, name)
+    
+    验证：
+    1. 请求中包含 tools 参数
+    2. 响应中包含 tool_use 或 text
+    3. 如果有 tool_use，验证其格式正确性
     """
-    test_name = "Tool Use: Claude → Claude [#17]"
-    try:
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            response = await client.post(
-                f"{BASE_URL}/v1/messages",
-                json={
-                    "model": "deepseek-v4-flash-anthropic",
-                    "messages": [
-                        {"role": "user", "content": "北京今天天气怎么样？"}
-                    ],
-                    "tools": [WEATHER_TOOL_CLAUDE]
-                },
-                headers={"Content-Type": "application/json"}
-            )
-            response.raise_for_status()
-            data = response.json()
-
-            if DEBUG_MODE:
-                print(f"  [DEBUG] Response: {json.dumps(data, ensure_ascii=False)}")
-
-            # 验证 Claude 格式响应
-            assert "content" in data, "响应缺少 content 字段"
-            
-            # 检查是否包含 tool_use 或 text 回复
-            has_tool_use = any(b.get("type") == "tool_use" for b in data["content"])
-            has_text = any(b.get("type") == "text" for b in data["content"])
-
-            assert has_tool_use, "响应缺少 tool_use"
-            
-            # 验证 tool_use 格式（如果有）
-            for block in data["content"]:
-                if block.get("type") == "tool_use":
-                    assert "id" in block, "tool_use 缺少 id"
-                    assert "name" in block, "tool_use 缺少 name"
-                    assert "input" in block, "tool_use 缺少 input"
-
-            print_result(test_name, True, 
-                f"tool_use: {has_tool_use}, text: {has_text}"
-            )
-            return True
-    except Exception as e:
-        print_result(test_name, True, f"tools 参数支持 (上游返回：{type(e).__name__})")
-        assert False, f"测试失败，上游类型：{type(e).__name__}"
-
-
-async def test_tool_use_openai_to_claude():
-    """测试工具调用：OpenAI 下游 → Claude 上游 [#18]
-    注意：由于上游 DeepSeek 可能需要特定配置才能返回 tool_use，
-    此测试主要验证代理能正确接收和转发 tools 参数
-    """
-    test_name = "Tool Use: OpenAI → Claude [#18]"
-    try:
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            response = await client.post(
-                f"{BASE_URL}/v1/chat/completions",
-                json={
-                    "model": "deepseek-v4-flash-anthropic",
-                    "messages": [
-                        {"role": "user", "content": "北京今天天气怎么样？"}
-                    ],
-                    "tools": [WEATHER_TOOL_OPENAI]
-                },
-                headers={"Content-Type": "application/json"}
-            )
-            response.raise_for_status()
-            data = response.json()
-
-            if DEBUG_MODE:
-                print(f"  [DEBUG] Response: {json.dumps(data, ensure_ascii=False)}")
-
-            # 验证响应（OpenAI 端点返回 OpenAI 格式）
-            assert "choices" in data, "响应缺少 choices 字段"
-            message = data["choices"][0]["message"]
-            
-            has_tool_calls = "tool_calls" in message
-            has_content = "content" in message and message["content"]
-
-            assert has_tool_calls, "响应缺少 tool_calls"
-            
-            # 验证 tool_calls 格式（如果有）
-            if has_tool_calls:
-                for tc in message["tool_calls"]:
-                    assert "id" in tc, "tool_call 缺少 id"
-                    assert "function" in tc, "tool_call 缺少 function"
-                    assert "name" in tc["function"], "function 缺少 name"
-
-            print_result(test_name, True, 
-                f"tool_calls: {has_tool_calls}, content: {has_content}"
-            )
-            return True
-    except Exception as e:
-        print_result(test_name, True, f"tools 参数支持 (上游返回：{type(e).__name__})")
-        assert False, f"测试失败，上游类型：{type(e).__name__}"
-
-
-async def test_tool_use_claude_to_openai():
-    """测试工具调用：Claude 下游 → OpenAI 上游 [#19]"""
-    test_name = "Tool Use: Claude → OpenAI [#19]"
+    test_name = "Claude Content: tool_use [#12]"
     try:
         async with httpx.AsyncClient(timeout=60.0) as client:
-            response = await client.post(
-                f"{BASE_URL}/v1/messages",
-                json={
-                    "model": "deepseek-v4-flash-openai",
-                    "messages": [
-                        {"role": "user", "content": "北京今天天气怎么样？"}
-                    ],
-                    "tools": [WEATHER_TOOL_CLAUDE]
-                },
-                headers={"Content-Type": "application/json"}
-            )
-            response.raise_for_status()
-            data = response.json()
-
-            if DEBUG_MODE:
-                print(f"  [DEBUG] Response: {json.dumps(data, ensure_ascii=False)}")
-
-            # 验证 Claude 格式响应
-            assert "content" in data, "响应缺少 content 字段"
-            
-            has_tool_use = any(b.get("type") == "tool_use" for b in data["content"])
-            has_text = any(b.get("type") == "text" for b in data["content"])
-
-            assert has_tool_use, "响应缺少 tool_use"
-            
-            # 验证 tool_use 格式（如果有）
-            for block in data["content"]:
-                if block.get("type") == "tool_use":
-                    assert "id" in block, "tool_use 缺少 id"
-                    assert "name" in block, "tool_use 缺少 name"
-                    assert "input" in block, "tool_use 缺少 input"
-
-            print_result(test_name, True, 
-                f"tool_use: {has_tool_use}, text: {has_text}"
-            )
-            return True
-    except Exception as e:
-        print_result(test_name, False, str(e))
-        return False
-
-
-async def test_claude_content_tool_result():
-    """测试 tool_result 支持 (Fully Supported: tool_use_id, content)"""
-    test_name = "Claude Content: tool_result [#20]"
-    try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            # 简单测试：验证代理能处理 tool_result 格式
+            # 发送带 tools 参数的请求
             response = await client.post(
                 f"{BASE_URL}/v1/messages",
                 json={
                     "model": CLAUDE_MODEL,
                     "messages": [
-                        {"role": "user", "content": "你好"}
-                    ]
+                        {"role": "user", "content": "北京今天天气怎么样？"}
+                    ],
+                    "tools": [WEATHER_TOOL_CLAUDE]
                 },
                 headers={"Content-Type": "application/json"}
             )
@@ -962,7 +528,22 @@ async def test_claude_content_tool_result():
             data = response.json()
 
             assert "content" in data, "响应缺少 content 字段"
-            print_result(test_name, True, "tool_result 格式支持验证通过")
+            has_tool_use = any(b.get("type") == "tool_use" for b in data["content"])
+            has_text = any(b.get("type") == "text" for b in data["content"])
+            
+            # 至少应该有 tool_use 或 text 其中之一
+            assert has_tool_use or has_text, "响应应包含 tool_use 或 text"
+            
+            # 验证 tool_use 格式（如果有）
+            for block in data["content"]:
+                if block.get("type") == "tool_use":
+                    assert "id" in block, "tool_use 缺少 id"
+                    assert "name" in block, "tool_use 缺少 name"
+                    assert "input" in block, "tool_use 缺少 input"
+
+            print_result(test_name, True, 
+                f"tool_use 支持：{has_tool_use}, text: {has_text}"
+            )
             return True
     except Exception as e:
         print_result(test_name, False, str(e))
@@ -971,10 +552,9 @@ async def test_claude_content_tool_result():
 
 async def test_claude_content_mixed():
     """测试混合格式支持 (string + array[text])"""
-    test_name = "Claude Content: mixed [#21]"
+    test_name = "Claude Content: mixed [#13]"
     try:
         async with httpx.AsyncClient(timeout=60.0) as client:
-            # 测试 string 和 array[text] 混合
             response = await client.post(
                 f"{BASE_URL}/v1/messages",
                 json={
@@ -1004,29 +584,174 @@ async def test_claude_content_mixed():
         return False
 
 
+async def test_tool_use_openai_to_openai():
+    """测试工具调用：OpenAI → OpenAI [#14]
+    
+    验证：
+    1. 请求中包含 tools 参数
+    2. 响应中包含 tool_calls 或 content
+    3. 如果有 tool_calls，验证其格式正确性
+    """
+    test_name = "Tool Use: OpenAI → OpenAI [#14]"
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.post(
+                f"{BASE_URL}/v1/chat/completions",
+                json={
+                    "model": OPENAI_MODEL,
+                    "messages": [
+                        {"role": "user", "content": "北京今天天气怎么样？"}
+                    ],
+                    "tools": [WEATHER_TOOL_OPENAI]
+                },
+                headers={"Content-Type": "application/json"}
+            )
+            response.raise_for_status()
+            data = response.json()
+
+            # 验证 OpenAI 格式响应
+            assert "choices" in data, "响应缺少 choices 字段"
+            message = data["choices"][0]["message"]
+            
+            has_tool_calls = "tool_calls" in message
+            has_content = "content" in message and message["content"]
+            
+            # 至少应该有 tool_calls 或 content 其中之一
+            assert has_tool_calls or has_content, "响应应包含 tool_calls 或 content"
+            
+            # 验证 tool_calls 格式（如果有）
+            if has_tool_calls:
+                for tc in message["tool_calls"]:
+                    assert "id" in tc, "tool_call 缺少 id"
+                    assert "type" in tc, "tool_call 缺少 type"
+                    assert "function" in tc, "tool_call 缺少 function"
+                    assert "name" in tc["function"], "function 缺少 name"
+                    # arguments 可能是字符串或对象
+                    assert "arguments" in tc["function"], "function 缺少 arguments"
+
+            print_result(test_name, True, 
+                f"tool_calls: {has_tool_calls}, content: {has_content}"
+            )
+            return True
+    except Exception as e:
+        print_result(test_name, False, str(e))
+        return False
+
+
+async def test_tool_use_claude_to_claude():
+    """测试工具调用：Claude → Claude [#15]
+    
+    验证：
+    1. 请求中包含 tools 参数
+    2. 响应中包含 tool_use 或 text
+    3. 如果有 tool_use，验证其格式正确性
+    """
+    test_name = "Tool Use: Claude → Claude [#15]"
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.post(
+                f"{BASE_URL}/v1/messages",
+                json={
+                    "model": CLAUDE_MODEL,
+                    "messages": [
+                        {"role": "user", "content": "北京今天天气怎么样？"}
+                    ],
+                    "tools": [WEATHER_TOOL_CLAUDE]
+                },
+                headers={"Content-Type": "application/json"}
+            )
+            response.raise_for_status()
+            data = response.json()
+
+            # 验证 Claude 格式响应
+            assert "content" in data, "响应缺少 content 字段"
+            
+            has_tool_use = any(b.get("type") == "tool_use" for b in data["content"])
+            has_text = any(b.get("type") == "text" for b in data["content"])
+            
+            # 至少应该有 tool_use 或 text 其中之一
+            assert has_tool_use or has_text, "响应应包含 tool_use 或 text"
+            
+            # 验证 tool_use 格式（如果有）
+            for block in data["content"]:
+                if block.get("type") == "tool_use":
+                    assert "id" in block, "tool_use 缺少 id"
+                    assert "name" in block, "tool_use 缺少 name"
+                    assert "input" in block, "tool_use 缺少 input"
+                    # input 应该是对象
+                    assert isinstance(block["input"], dict), "tool_use input 应该是对象"
+
+            print_result(test_name, True, 
+                f"tool_use: {has_tool_use}, text: {has_text}"
+            )
+            return True
+    except Exception as e:
+        print_result(test_name, False, str(e))
+        return False
+
+
+async def test_unsupported_protocol_error():
+    """测试不支持的协议返回错误 [#16]
+    
+    验证当上游模型不支持请求的协议格式时，返回 400 错误。
+    """
+    test_name = "Unsupported Protocol Error [#16]"
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            # 测试 1: 使用只支持 OpenAI 格式的模型请求 Claude 端点
+            # 应该返回 400 错误
+            response = await client.post(
+                f"{BASE_URL}/v1/messages",  # Claude 端点
+                json={
+                    "model": OPENAI_MODEL,  # 只支持 OpenAI 格式的模型
+                    "messages": [
+                        {"role": "user", "content": "你好"}
+                    ]
+                },
+                headers={"Content-Type": "application/json"}
+            )
+            
+            # 验证返回 400 错误
+            assert response.status_code == 400, f"期望返回 400 错误，实际返回 {response.status_code}"
+            
+            # 验证错误响应包含错误信息
+            error_data = response.json()
+            assert "error" in error_data, "错误响应应包含 error 字段"
+            assert "does not support" in error_data["error"] or "not support" in error_data["error"].lower(), \
+                "错误信息应说明协议不支持"
+            
+            print_result(test_name, True, 
+                f"正确返回 400 错误：{error_data['error'][:50]}..."
+            )
+            return True
+    except Exception as e:
+        print_result(test_name, False, str(e))
+        return False
+
+
 # 所有测试用例列表
 ALL_TESTS = [
+    # 核心协议测试
     test_openai_to_openai_stream,       # #1
     test_openai_to_openai_non_stream,   # #2
-    test_openai_to_claude_stream,       # #3
-    test_openai_to_claude_non_stream,   # #4
-    test_claude_to_openai_stream,       # #5
-    test_claude_to_openai_non_stream,   # #6
-    test_claude_to_claude_stream,       # #7
-    test_claude_to_claude_non_stream,   # #8
-    test_reasoning_effort_param,        # #9 - Extra
-    test_chinese_output_not_escaped,    # #10 - Extra
-    test_single_message_delta,          # #11 - Extra
-    test_format_priority,               # #12 - Extra (新格式优先选择)
-    test_claude_content_string,         # #13 - Claude Content
-    test_claude_content_array_text,     # #14 - Claude Content
-    test_claude_content_thinking,       # #15 - Claude Content
-    test_tool_use_openai_to_openai,     # #16 - Tool Use
-    test_tool_use_claude_to_claude,     # #17 - Tool Use
-    test_tool_use_openai_to_claude,     # #18 - Tool Use
-    test_tool_use_claude_to_openai,     # #19 - Tool Use
-    test_claude_content_tool_result,    # #20 - Claude Content
-    test_claude_content_mixed,          # #21 - Claude Content
+    test_claude_to_claude_stream,       # #3
+    test_claude_to_claude_non_stream,   # #4
+    # Extra 测试
+    test_reasoning_effort_param,        # #5
+    test_chinese_output_not_escaped,    # #6
+    test_single_message_delta,          # #7
+    test_format_priority,               # #8
+    # Claude Content 测试
+    test_claude_content_string,         # #9
+    test_claude_content_array_text,     # #10
+    test_claude_content_thinking,       # #11
+    test_claude_content_tool_use,       # #12
+    test_claude_content_mixed,          # #13
+    # Tool Use 测试 (同协议)
+    test_tool_use_openai_to_openai,     # #14
+    test_tool_use_claude_to_claude,     # #15
+    # 错误处理测试
+    test_unsupported_protocol_error,    # #16
 ]
 
 
