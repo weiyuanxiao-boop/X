@@ -120,7 +120,10 @@ class ModelConfig:
 
 
 def setup_logger(name: str) -> logging.Logger:
-    """Setup logger with file and console handlers."""
+    """Setup logger with file and console handlers.
+    
+    All loggers write to a single app.log file.
+    """
     settings = get_settings()
     logger = logging.getLogger(name)
     logger.setLevel(getattr(logging, settings.log_level.upper(), logging.INFO))
@@ -128,8 +131,8 @@ def setup_logger(name: str) -> logging.Logger:
     # Ensure log directory exists
     settings.log_dir_path.mkdir(parents=True, exist_ok=True)
 
-    # File handler
-    log_file = settings.log_dir_path / f"{name}.log"
+    # Single file handler for all loggers
+    log_file = settings.log_dir_path / "app.log"
     file_handler = logging.FileHandler(log_file, encoding="utf-8")
     file_handler.setLevel(logging.DEBUG)
 
@@ -137,7 +140,7 @@ def setup_logger(name: str) -> logging.Logger:
     console_handler = logging.StreamHandler()
     console_handler.setLevel(logging.INFO)
 
-    # Formatter
+    # Formatter with logger name
     formatter = logging.Formatter(
         "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S"
