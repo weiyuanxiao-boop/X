@@ -261,18 +261,15 @@ function Set-Alias {
     try {
         $response = Invoke-RestMethod -Uri "http://localhost:$Port/v1/aliases?alias=$Alias&target=$Target" -Method Post -TimeoutSec 10
         Write-Host ""
-        if ($response.message -like "*updated*") {
-            Write-Host "Alias updated successfully!" -ForegroundColor Green
-        } else {
-            Write-Host "Alias added successfully!" -ForegroundColor Green
-        }
+        Write-Host "$($response.message)" -ForegroundColor Green
         Write-Host "  $($response.alias) -> $($response.target)"
-        Write-Host ""
-        Write-Host "Note: Changes are temporary. To persist, update model_config.yaml and restart."
     } catch {
-        Write-Error "Failed to set alias: $_"
+        $errorDetail = $_.ErrorDetails.Message | ConvertFrom-Json
+        $errorMsg = $errorDetail.detail
+        Write-Error "Failed to set alias: $errorMsg"
         Write-Host ""
-        Write-Host "Make sure the proxy is running and target model exists."
+        Write-Host "Available models:"
+        Write-Host "  Run '.\proxy.ps1 models' to see available models"
     }
 }
 
@@ -287,14 +284,12 @@ function Remove-Alias {
     try {
         $response = Invoke-RestMethod -Uri "http://localhost:$Port/v1/aliases/$Alias" -Method Delete -TimeoutSec 10
         Write-Host ""
-        Write-Host "Alias removed successfully!" -ForegroundColor Green
+        Write-Host "$($response.message)" -ForegroundColor Green
         Write-Host "  $($response.alias)"
-        Write-Host ""
-        Write-Host "Note: Changes are temporary. To persist, update model_config.yaml and restart."
     } catch {
-        Write-Error "Failed to remove alias: $_"
-        Write-Host ""
-        Write-Host "Make sure the proxy is running and alias exists."
+        $errorDetail = $_.ErrorDetails.Message | ConvertFrom-Json
+        $errorMsg = $errorDetail.detail
+        Write-Error "Failed to remove alias: $errorMsg"
     }
 }
 

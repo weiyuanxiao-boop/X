@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import StreamingResponse, JSONResponse
 
 from .config import get_model_config, get_settings, get_logger
@@ -366,10 +366,11 @@ async def create_alias(alias: str, target: str):
     # Check if alias already exists
     is_update = alias in model_config._aliases
     
-    # Update aliases in memory (note: not persisted to file)
+    # Update aliases in memory and persist to file
     model_config._aliases[alias] = target
+    model_config.save_aliases()
     
-    message = "Alias updated (temporary, restart to persist)" if is_update else "Alias added (temporary, restart to persist)"
+    message = "Alias updated (saved to aliases.yaml)" if is_update else "Alias added (saved to aliases.yaml)"
     return {"alias": alias, "target": target, "message": message}
 
 
@@ -379,7 +380,8 @@ async def delete_alias(alias: str):
     if alias not in model_config._aliases:
         raise HTTPException(status_code=404, detail=f"Alias '{alias}' not found")
     
-    # Remove from memory (note: not persisted to file)
+    # Remove from memory and persist to file
     del model_config._aliases[alias]
+    model_config.save_aliases()
     
-    return {"alias": alias, "message": "Alias removed (temporary, restart to persist)"}
+    return {"alias": alias, "message": "Alias removed (updated aliases.yaml)"}

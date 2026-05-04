@@ -28,11 +28,28 @@ class Settings(BaseSettings):
 class ModelConfig:
     def __init__(self):
         config_path = CONFIG_DIR / "model_config.yaml"
+        aliases_path = CONFIG_DIR / "aliases.yaml"
+        
         with open(config_path, "r", encoding="utf-8") as f:
             self._config = yaml.safe_load(f)
         self._models = self._config.get("models", {})
         self._default = self._config.get("default_model", "")
-        self._aliases = self._config.get("aliases", {})
+        
+        # Load aliases from separate file
+        if aliases_path.exists():
+            with open(aliases_path, "r", encoding="utf-8") as f:
+                self._aliases = yaml.safe_load(f) or {}
+        else:
+            self._aliases = {}
+    
+    def save_aliases(self):
+        """Save aliases to aliases.yaml file."""
+        aliases_path = CONFIG_DIR / "aliases.yaml"
+        with open(aliases_path, "w", encoding="utf-8") as f:
+            f.write("# Model Aliases Configuration\n")
+            f.write("# Format: alias_name: target_model\n\n")
+            for alias, target in self._aliases.items():
+                f.write(f"{alias}: {target}\n")
 
     def _resolve(self, model_name: str) -> str:
         return self._aliases.get(model_name, model_name)

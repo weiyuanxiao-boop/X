@@ -102,8 +102,3 @@ models:
 
 # Default model when client doesn't specify
 default_model: deepseek-v4-flash
-
-# Model alias mapping (downstream name → actual model name in models section)
-aliases:
-  cc-coder: qwen3.6-plus
-
