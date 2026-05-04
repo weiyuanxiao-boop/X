@@ -9,7 +9,16 @@
       "Bash(type *)",
       "Bash(dir *)",
       "Bash(powershell *)",
-      "Bash(select-object *)"
+      "Bash(select-object *)",
+      "Bash(start-sleep *)",
+      "Bash(select-string *)",
+      "Bash(start *)",
+      "Bash(timeout *)",
+      "Bash(mkdir *)",
+      "Bash(echo *)",
+      "Bash(copy-item *)",
+      "Bash(foreach-object *)",
+      "Bash(' ')"
     ]
   },
   "$version": 3

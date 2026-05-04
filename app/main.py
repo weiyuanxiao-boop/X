@@ -303,5 +303,83 @@ async def health():
 
 @app.get("/v1/models")
 async def list_models():
-    """List available models."""
-    return {"models": [{"id": m, "object": "model"} for m in model_config.list_models()]}
+    """List available models with supported formats and alias info."""
+    models = []
+    
+    # Get actual models (not aliases)
+    actual_models = list(model_config._models.keys())
+    aliases = model_config._aliases
+    
+    # Add actual models
+    for model_name in actual_models:
+        try:
+            model_info = {"id": model_name, "object": "model", "supported_formats": [], "is_alias": False}
+            
+            # Check if model supports OpenAI format
+            try:
+                upstream = model_config.get_upstream_info(model_name, downstream_format="openai")
+                model_info["supported_formats"].append("openai")
+            except ValueError:
+                pass
+            
+            # Check if model supports Anthropic/Claude format
+            try:
+                upstream = model_config.get_upstream_info(model_name, downstream_format="anthropic")
+                model_info["supported_formats"].append("anthropic")
+            except ValueError:
+                pass
+            
+            models.append(model_info)
+        except Exception:
+            models.append({"id": model_name, "object": "model", "supported_formats": [], "is_alias": False})
+    
+    # Add aliases
+    for alias_name, target_model in aliases.items():
+        # Find the target model's formats
+        target_info = next((m for m in models if m["id"] == target_model), None)
+        alias_info = {
+            "id": alias_name,
+            "object": "model",
+            "supported_formats": target_info["supported_formats"] if target_info else [],
+            "is_alias": True,
+            "alias_of": target_model
+        }
+        models.append(alias_info)
+    
+    return {"models": models}
+
+
+@app.get("/v1/aliases")
+async def list_aliases():
+    """List all configured model aliases."""
+    aliases = model_config._aliases
+    return {"aliases": [{"alias": k, "target": v} for k, v in aliases.items()]}
+
+
+@app.post("/v1/aliases")
+async def create_alias(alias: str, target: str):
+    """Add or update a model alias."""
+    # Validate target model exists
+    if target not in model_config._models:
+        raise HTTPException(status_code=400, detail=f"Target model '{target}' not found")
+    
+    # Check if alias already exists
+    is_update = alias in model_config._aliases
+    
+    # Update aliases in memory (note: not persisted to file)
+    model_config._aliases[alias] = target
+    
+    message = "Alias updated (temporary, restart to persist)" if is_update else "Alias added (temporary, restart to persist)"
+    return {"alias": alias, "target": target, "message": message}
+
+
+@app.delete("/v1/aliases/{alias}")
+async def delete_alias(alias: str):
+    """Remove a model alias."""
+    if alias not in model_config._aliases:
+        raise HTTPException(status_code=404, detail=f"Alias '{alias}' not found")
+    
+    # Remove from memory (note: not persisted to file)
+    del model_config._aliases[alias]
+    
+    return {"alias": alias, "message": "Alias removed (temporary, restart to persist)"}
