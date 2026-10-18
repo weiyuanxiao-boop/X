@@ -37,6 +37,7 @@ class ModelConfig:
         self._auth = self._parse_auth(self._config.get("auth"))
         self._limits = self._parse_limits(self._config.get("limits"))
         self._upstream = self._parse_upstream(self._config.get("upstream"))
+        self._cors = self._parse_cors(self._config.get("cors"))
         
         # Load aliases from separate file
         if aliases_path.exists():
@@ -112,6 +113,43 @@ class ModelConfig:
             "proxy": str(proxy) if proxy else None,
         }
 
+    @staticmethod
+    def _parse_cors(raw) -> dict:
+        """解析浏览器跨域配置。
+
+        默认关闭。开启时注意：``allow_origins`` 含 ``"*"`` 会强制
+        ``allow_credentials=False``（浏览器规范禁止二者共存）。
+        """
+        if not isinstance(raw, dict):
+            raw = {}
+
+        origins_raw = raw.get("allow_origins") or []
+        if isinstance(origins_raw, str):
+            origins_raw = [origins_raw]
+        origins = [str(o).strip() for o in origins_raw if str(o).strip()]
+
+        enabled = raw.get("enabled")
+        if enabled is None:
+            enabled = bool(origins)
+
+        allow_credentials = bool(raw.get("allow_credentials", False))
+        if "*" in origins:
+            allow_credentials = False
+
+        methods = raw.get("allow_methods") or ["GET", "POST", "OPTIONS"]
+        headers = raw.get("allow_headers") or [
+            "authorization", "content-type", "x-api-key",
+            "anthropic-version", "anthropic-beta",
+        ]
+
+        return {
+            "enabled": bool(enabled),
+            "allow_origins": origins,
+            "allow_credentials": allow_credentials,
+            "allow_methods": [str(m).upper() for m in methods],
+            "allow_headers": [str(h) for h in headers],
+        }
+
     def get_auth_config(self) -> dict:
         return self._auth
 
@@ -120,6 +158,9 @@ class ModelConfig:
 
     def get_upstream_config(self) -> dict:
         return self._upstream
+
+    def get_cors_config(self) -> dict:
+        return self._cors
     
     def save_aliases(self):
         """Save aliases to aliases.yaml file.

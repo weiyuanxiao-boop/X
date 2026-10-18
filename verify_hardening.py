@@ -313,6 +313,29 @@ check("X-Internal-Host 已过滤", r.headers.get("x-internal-host") is None,
 # ══════════════════════════════════════════════════════════════
 print()
 print("=" * 76)
+print("14 · 浏览器跨域（CORS）")
+print("=" * 76)
+origin = {"Origin": "https://example.com"}
+r = local.options("/v1/messages", headers={
+    **origin,
+    "Access-Control-Request-Method": "POST",
+    "Access-Control-Request-Headers": "authorization,content-type",
+})
+check("OPTIONS 预检 200（不被鉴权拦截）", r.status_code == 200, str(r.status_code))
+check("预检返回 allow-origin",
+      r.headers.get("access-control-allow-origin") in ("*", "https://example.com"),
+      str(r.headers.get("access-control-allow-origin")))
+
+mc._auth = {"enabled": True, "keys": {}}
+r = remote.post("/v1/messages", json={"model": "__hard__", "messages": []}, headers=origin)
+check("401 也带 CORS 头（浏览器能看到真实错误）",
+      r.status_code == 401 and r.headers.get("access-control-allow-origin") is not None,
+      f"{r.status_code} {r.headers.get('access-control-allow-origin')}")
+mc._auth = {"enabled": False, "keys": {}}
+
+# ══════════════════════════════════════════════════════════════
+print()
+print("=" * 76)
 passed = sum(1 for _, ok, _ in results if ok)
 failed = [n for n, ok, _ in results if not ok]
 print(f"结果：{passed}/{len(results)} 通过")

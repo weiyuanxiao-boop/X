@@ -295,6 +295,33 @@ upstream:
 
 错误响应只返回通用描述（如 `Failed to reach upstream`），具体异常（可能含内网地址、代理信息）只写服务日志。
 
+## 浏览器跨域（CORS）
+
+只有**浏览器 JS 直接调用**本服务时才需要；后端、curl、SDK 调用不受影响。
+
+```yaml
+cors:
+  enabled: true
+  allow_origins:
+    - "*"          # 或具体来源
+  allow_credentials: false
+  allow_methods: [GET, POST, OPTIONS]
+  allow_headers:
+    - authorization
+    - content-type
+    - x-api-key
+    - anthropic-version
+    - anthropic-beta
+```
+
+三点必须注意：
+
+1. **`*` 与 `allow_credentials: true` 不能共存**（浏览器规范禁止）。配了 `*` 时服务端会强制 `allow_credentials=false`，此时前端的 `fetch(..., {credentials: "include"})` 会被浏览器拒绝。要么去掉 `credentials`，要么把 `*` 换成具体来源。
+2. **OPTIONS 预检不携带 `Authorization`**，所以 CORS 中间件必须位于鉴权中间件**外层**（代码里注册在鉴权之后），否则预检会先被 401 拦掉。
+3. **鉴权失败（401）的响应也会带 CORS 头**，浏览器才能看到真实的 401 而不是笼统的 CORS 错误。
+
+**安全提示**：浏览器直连意味着 API key 写在前端代码里，任何能打开该页面的人都能拿到。建议只在内网管理页或本地调试时开启；公网页面应走后端转发。
+
 
 ## 日志
 

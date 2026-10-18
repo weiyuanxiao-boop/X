@@ -5,6 +5,7 @@ import time
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from .auth import authenticate
@@ -154,6 +155,27 @@ async def auth_middleware(request: Request, call_next):
 
     downstream_format = "anthropic" if path == "/v1/messages" else "openai"
     return _error(401, "authentication_error", result.reason, downstream_format)
+
+
+# ── 浏览器跨域 ────────────────────────────────────────────────
+# 必须注册在鉴权中间件之后：Starlette 里后注册的中间件位于外层，
+# 这样 OPTIONS 预检会在进入鉴权之前被 CORSMiddleware 处理掉。
+# （浏览器的预检请求不携带 Authorization 头，若先鉴权会直接 401。）
+
+_cors_config = model_config.get_cors_config()
+if _cors_config["enabled"]:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=_cors_config["allow_origins"],
+        allow_credentials=_cors_config["allow_credentials"],
+        allow_methods=_cors_config["allow_methods"],
+        allow_headers=_cors_config["allow_headers"],
+        max_age=600,
+    )
+    logger.info(
+        f"CORS enabled: origins={_cors_config['allow_origins']} "
+        f"credentials={_cors_config['allow_credentials']}"
+    )
 
 
 # ── 统一转发逻辑 ───────────────────────────────────────────────

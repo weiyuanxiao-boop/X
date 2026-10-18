@@ -182,6 +182,26 @@
 
 ---
 
+### 新增浏览器跨域（CORS）支持
+
+**问题**：安全整改时把 `access-control-*` 响应头全部过滤掉了，浏览器 JS 无法直连。
+另外 `OPTIONS` 预检不带 `Authorization`，会被鉴权中间件拦成 401——而且 401 也没有 CORS 头，
+浏览器只能报笼统的 CORS 错误，看不到真实原因。
+
+**改动**：
+- `config.py` 新增 `cors` 配置解析（`enabled` / `allow_origins` / `allow_credentials` /
+  `allow_methods` / `allow_headers`）；`allow_origins` 含 `"*"` 时强制 `allow_credentials=false`
+- `main.py` 在**鉴权中间件之后**注册 `CORSMiddleware`（Starlette 里后注册的位于外层），
+  使 OPTIONS 预检在进入鉴权前就被处理
+- `model_config.yaml` 增加 `cors` 段
+
+**验证**：`verify_hardening.py` 新增 3 项——预检 200、预检返回 `allow-origin`、
+401 响应带 CORS 头，**36/36 通过**。真实 uvicorn 下用 curl 模拟浏览器预检，
+返回 `allow-origin: *` + `allow-methods` + `max-age=600` + 含 `authorization` 的 `allow-headers`。
+回归 `verify_passthrough.py` 37/37、`verify_auth.py` 27/27、`verify_logging.py` 12/12。
+
+---
+
 ## 历史改动 (2026-04-29)
 
 ### 移除交叉协议转换，仅支持同协议透传
