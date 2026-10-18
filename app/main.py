@@ -46,14 +46,22 @@ async def _handle(request: Request, downstream_format: str) -> Response:
     跨协议请求在路由阶段直接拒绝（400）。
     """
     raw_body = await request.body()
+    client_id = request.client.host if request.client else "unknown"
 
     try:
         payload = json.loads(raw_body)
         if not isinstance(payload, dict):
             raise ValueError("body must be a JSON object")
     except Exception as exc:
-        return _error(400, "invalid_request_error",
-                      f"Request body is not a valid JSON object: {exc}", downstream_format)
+        message = f"Request body is not a valid JSON object: {exc}"
+        conversation_logger.log_exchange(
+            client_id=client_id,
+            downstream_model="unknown",
+            upstream_model="",
+            request={"__raw__": raw_body.decode("utf-8", "replace")[:4000]},
+            response={"status": 400, "error": message},
+        )
+        return _error(400, "invalid_request_error", message, downstream_format)
 
     model_name = payload.get("model") or model_config._default
 
@@ -61,12 +69,14 @@ async def _handle(request: Request, downstream_format: str) -> Response:
         # 只接受与下游同协议的上游；跨协议在这里抛 ValueError
         upstream = model_config.get_upstream_info(model_name, downstream_format=downstream_format)
     except ValueError as exc:
+        conversation_logger.log_exchange(
+            client_id=client_id,
+            downstream_model=model_name,
+            upstream_model="",
+            request=payload,
+            response={"status": 400, "error": str(exc)},
+        )
         return _error(400, "invalid_request_error", str(exc), downstream_format)
-
-    client_id = request.client.host if request.client else "unknown"
-    conv_id = conversation_logger.log_request(
-        model_name, upstream["upstream_model"], payload, client_id
-    )
 
     body = build_body(raw_body, payload, upstream["upstream_model"])
     headers = build_upstream_headers(request.headers, downstream_format, upstream)
@@ -78,8 +88,16 @@ async def _handle(request: Request, downstream_format: str) -> Response:
         resp = await client.send(upstream_request, stream=True)
     except httpx.HTTPError as exc:
         await client.aclose()
+        message = f"Failed to reach upstream: {exc}"
         logger.exception(f"Upstream connection failed for {model_name}: {exc}")
-        return _error(502, "upstream_error", f"Failed to reach upstream: {exc}", downstream_format)
+        conversation_logger.log_exchange(
+            client_id=client_id,
+            downstream_model=model_name,
+            upstream_model=upstream["upstream_model"],
+            request=payload,
+            response={"status": 502, "error": message},
+        )
+        return _error(502, "upstream_error", message, downstream_format)
 
     response_headers = filter_response_headers(resp.headers)
 
@@ -109,9 +127,12 @@ async def _handle(request: Request, downstream_format: str) -> Response:
             finally:
                 await resp.aclose()
                 await client.aclose()
-                conversation_logger.log_response(
-                    model_name, upstream["upstream_model"], conv_id,
-                    {
+                conversation_logger.log_exchange(
+                    client_id=client_id,
+                    downstream_model=model_name,
+                    upstream_model=upstream["upstream_model"],
+                    request=payload,
+                    response={
                         "status": resp.status_code,
                         "headers": response_headers,
                         "stream": True,
@@ -131,9 +152,12 @@ async def _handle(request: Request, downstream_format: str) -> Response:
         await resp.aclose()
         await client.aclose()
 
-    conversation_logger.log_response(
-        model_name, upstream["upstream_model"], conv_id,
-        {
+    conv_id = conversation_logger.log_exchange(
+        client_id=client_id,
+        downstream_model=model_name,
+        upstream_model=upstream["upstream_model"],
+        request=payload,
+        response={
             "status": resp.status_code,
             "headers": response_headers,
             "body": parse_json_body(upstream_body),

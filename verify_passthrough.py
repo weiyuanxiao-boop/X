@@ -7,10 +7,14 @@
     python verify_passthrough.py
 """
 
+import atexit
 import json
 import os
+import shutil
+import tempfile
 import threading
 import time
+from pathlib import Path
 
 import uvicorn
 from fastapi import FastAPI, Request
@@ -18,7 +22,13 @@ from fastapi.responses import Response, StreamingResponse
 from fastapi.testclient import TestClient
 
 from app.config import get_model_config
+from app.logger import logger as conversation_logger
 from app.main import app as proxy_app
+
+# 验证脚本不应污染真实日志目录
+_LOG_TMP = Path(tempfile.mkdtemp(prefix="xlog_verify_pt_"))
+conversation_logger._root = _LOG_TMP
+atexit.register(shutil.rmtree, _LOG_TMP, ignore_errors=True)
 
 # ── 假上游 ────────────────────────────────────────────────────
 

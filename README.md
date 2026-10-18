@@ -174,21 +174,56 @@ aliases:
 
 ## 日志
 
-所有日志统一写入 `logs/app.log` 文件，包含：
-- 应用日志（启动、错误等）
-- 代理日志（上游调用、错误等）
-- 对话日志（请求/响应记录）
+运行日志写入 `logs/app.log`；对话记录单独存为 JSONL，见下。
 
-### 日志结构（对话记录）
+### 对话记录：目录与文件
 
-对话记录以 JSON 格式保存在 `logs/conversations_{下游模型}_{上游模型}_{日期}.json` 文件中。
+> 2026-10-18 之前的日志仍在 `logs/` 根目录，是单个 JSON 数组文件；
+> 之后的日志按下述规则写入日期子目录，格式为 JSONL。
 
-`request` 记录下游发出的完整 JSON（未做任何字段裁剪），`response` 记录上游返回的状态码、响应头与响应体。
+```
+logs/
+└── 2026-10-18/
+    ├── conversations_127.0.0.1_cc-coder_deepseek-v4-flash.jsonl
+    └── conversations_127.0.0.1_deepseek-v4-flash-openai_deepseek-v4-flash.jsonl
+```
+
+- 一级目录是**日期**（本地时区）
+- 文件名是 `conversations_{客户端}_{下游模型}_{上游模型}.jsonl`，客户端取连接来源 IP
+- 一条对话写一行，`request` 与 `response` 在同一条记录内，不需要跨记录关联
+
+### 为什么是 JSONL 而不是 JSON 数组
+
+写入采用 **O_APPEND + 单次 write + 跨进程文件锁**（Windows `msvcrt.locking` / POSIX `flock`），
+不做「读整个文件 → 改 → 写回」。因此：
+
+- 并发请求互不覆盖，多线程、多 worker 进程同时写都不会丢记录
+- 进程被强杀最多丢失正在写的那一行，不影响已落盘记录
+- 单行损坏只影响该行，其余行照常读取
+
+代价是整个文件不再是合法 JSON 文档，需要用按行处理的工具：
+
+```bash
+wc -l logs/2026-10-18/*.jsonl              # 请求数
+grep '"status": 500' logs/2026-10-18/*.jsonl
+jq -c 'select(.response.status != 200)' logs/2026-10-18/*.jsonl   # 逐行解析
+```
+
+```python
+import json, glob
+
+for path in glob.glob("logs/2026-10-18/*.jsonl"):
+    for line in open(path, encoding="utf-8"):
+        if line.strip():
+            record = json.loads(line)
+```
+
+### 单行结构
 
 ```json
 {
   "id": "uuid",
-  "timestamp": "2026-10-18T10:00:00+00:00",
+  "timestamp": "2026-10-18T21:49:04.741+08:00",
   "client_id": "127.0.0.1",
   "downstream_model": "deepseek-v4-flash-openai",
   "upstream_model": "deepseek-v4-flash",
@@ -202,11 +237,13 @@ aliases:
   "response": {
     "status": 200,
     "headers": {"content-type": "application/json", "request-id": "..."},
-    "body": {"id": "...", "choices": [...], "usage": {...}},
-    "timestamp": "2026-10-18T10:00:02+00:00"
+    "body": {"id": "...", "choices": [...], "usage": {...}}
   }
 }
 ```
+
+本地拒绝（非法 JSON、跨协议、模型未知）与上游不可达也会记录，`response` 为
+`{"status": 400|502, "error": "..."}`，`upstream_model` 为空串。
 
 ### 流式日志
 
@@ -237,6 +274,16 @@ python verify_passthrough.py
 覆盖 29 项断言：请求体逐字节一致、`cache_control` / `document` / `redacted_thinking` 保留、
 不注入默认值、请求头透传、`tool_calls` / `tool_call_id` 保留、响应体与响应头透传、
 上游 400 不被改写为 500、`retry-after` 保留、流式逐字节等价、跨协议 400。
+
+### 日志写入验证（离线）
+
+验证并发不丢记录、JSONL 完整性、目录与文件名规则：
+
+```bash
+python verify_logging.py
+```
+
+覆盖多线程 500 条、多进程 4×150 条（模拟 `--workers 4`）、端到端按客户端与模型分文件。
 
 ### 端到端测试（需服务在 4936 运行 + 真实上游）
 
@@ -284,7 +331,8 @@ D:\ProjectsMy\X\
 ├── .env                 # 环境变量与服务配置
 ├── test_proxy.py        # 端到端测试套件（需真实上游）
 ├── verify_passthrough.py # 透传保真度验证（自带假上游，离线可跑）
-└── logs/                # 日志输出目录
+├── verify_logging.py    # 日志并发写入与结构验证（离线可跑）
+└── logs/                # 日志输出目录（按日期分目录）
 ```
 
 ## 注意事项
