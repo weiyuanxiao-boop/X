@@ -138,6 +138,8 @@ def main():
 
     import app.proxy as proxy
     from app.main import app as proxy_app
+    from app.config import get_model_config as _gmc
+    _gmc()._auth = {"enabled": False, "keys": {}}
 
     e2e_root = tmp / "e2e"
     logger._root = e2e_root

@@ -5,6 +5,7 @@
 ## 功能特性
 
 - **双协议支持** — 同时支持 OpenAI (`/v1/chat/completions`) 和 Claude (`/v1/messages`) 两种 API 格式
+- **访问鉴权** — 本地连接免 key；非本地连接必须携带 `model_config.yaml` 中配置的 key
 - **字节级透传** — 下游请求体原样发往上游，唯一改动的字节是顶层 `model` 字段的值。字段顺序、未知字段、嵌套结构、unicode 转义、数字写法全部保持原样；响应体同样按原始字节回传，不重新序列化
 - **请求头/响应头透传** — 下游业务头（`anthropic-beta`、`openai-organization` 等）原样转发，上游限流头、`request-id` 原样回传
 - **跨协议不支持** — Claude ↔ OpenAI 之间不做转换，路由阶段直接返回 400
@@ -172,6 +173,65 @@ aliases:
 
 **不支持跨协议转换：** Claude ↔ OpenAI 之间不做任何字段映射。若下游协议与上游可用格式不一致，直接返回 400，不会尝试转换。
 
+## 访问鉴权
+
+默认关闭（`auth.keys` 为空）。在 `model_config.yaml` 里填了 key 就自动启用。
+
+```yaml
+auth:
+  keys:
+    - "sk-aaa"          # 列表写法，日志里记为 key1
+    - "sk-bbb"
+  # 或带名字的映射写法，名字会记入日志的 auth.principal
+  # keys:
+  #   team-a: "sk-aaa"
+  #   ci: "sk-bbb"
+  # enabled: false     # 可选，显式关闭
+```
+
+流式写法（`keys: ["sk-aaa", "sk-bbb"]`）与块状写法完全等价，任选其一。
+值建议始终加双引号：不加引号时纯数字会被 YAML 解析成整数，含特殊字符可能整段解析失败。
+
+### 放行规则
+
+| 来源 | 是否校验 key |
+|---|---|
+| `localhost` / `127.0.0.0/8` / `::1` / `::ffff:127.x.x.x` | 不校验，直接放行 |
+| 其他地址 | 必须携带正确 key，否则 401 |
+| `auth.enabled: true` 但 `keys` 为空 | 非本地全部拒绝（fail closed） |
+
+`/health` 不鉴权，留给探活；`/v1/models`、`/docs`、`/v1/aliases` 等其余路径都要过鉴权。
+
+### 客户端怎么传 key
+
+三种方式任选，按顺序取第一个命中的（同时兼容 OpenAI 与 Claude 官方 SDK）：
+
+```bash
+# OpenAI / 通用
+curl -H "Authorization: Bearer sk-aaa" ...
+# Claude SDK
+curl -H "x-api-key: sk-aaa" ...
+# 容错：Authorization 直接放 key
+curl -H "Authorization: sk-aaa" ...
+```
+
+下游用于鉴权的这两个头**不会转发给上游** —— 转发层会用上游凭证覆盖 `Authorization` / `x-api-key`。
+
+### 401 响应
+
+按下游协议返回标准错误结构：
+
+```json
+// /v1/messages
+{"type": "error", "error": {"type": "authentication_error", "message": "Invalid API key"}}
+
+// /v1/chat/completions
+{"error": {"message": "Invalid API key", "type": "authentication_error", "param": null, "code": null}}
+```
+
+被拒请求会写入对话日志（`response.status = 401`），但**请求体不落盘**，避免未认证内容写满磁盘。
+
+
 ## 日志
 
 运行日志写入 `logs/app.log`；对话记录单独存为 JSONL，见下。
@@ -227,6 +287,7 @@ for path in glob.glob("logs/2026-10-18/*.jsonl"):
   "client_id": "127.0.0.1",
   "downstream_model": "deepseek-v4-flash-openai",
   "upstream_model": "deepseek-v4-flash",
+  "auth": {"mode": "local", "principal": ""},
   "request": {
     "model": "deepseek-v4-flash-openai",
     "messages": [{"role": "user", "content": "你好"}],
@@ -285,6 +346,14 @@ python verify_logging.py
 
 覆盖多线程 500 条、多进程 4×150 条（模拟 `--workers 4`）、端到端按客户端与模型分文件。
 
+### 访问鉴权验证（离线）
+
+```bash
+python verify_auth.py
+```
+
+覆盖 127.0.0.1 / 127.5.5.5 / ::1 / ::ffff:127.x 放行、远程无 key / 错 key / 正确 key、三种携带方式、`/health` 与 `/v1/models` 差异、下游 key 不泄漏到上游、日志 `auth` 字段留痕。
+
 ### 端到端测试（需服务在 4936 运行 + 真实上游）
 
 ```bash
@@ -326,12 +395,14 @@ D:\ProjectsMy\X\
 │   ├── main.py          # FastAPI 应用，API 端点与转发编排
 │   ├── config.py        # 配置加载，日志设置
 │   ├── proxy.py         # 字节级透传（model 改写、头过滤、SSE 采集）
-│   └── logger.py        # 对话日志记录
+│   ├── auth.py          # 访问鉴权（本地放行、key 校验）
+│   └── logger.py        # 对话日志记录（JSONL 追加写）
 ├── model_config.yaml    # 模型路由配置
 ├── .env                 # 环境变量与服务配置
 ├── test_proxy.py        # 端到端测试套件（需真实上游）
 ├── verify_passthrough.py # 透传保真度验证（自带假上游，离线可跑）
 ├── verify_logging.py    # 日志并发写入与结构验证（离线可跑）
+├── verify_auth.py       # 访问鉴权验证（离线可跑）
 └── logs/                # 日志输出目录（按日期分目录）
 ```
 

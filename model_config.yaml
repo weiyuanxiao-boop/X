@@ -102,3 +102,29 @@ models:
 
 # Default model when client doesn't specify
 default_model: deepseek-v4-flash
+
+# ── 访问鉴权 ──────────────────────────────────────────────────
+# 本地连接（localhost / 127.0.0.0/8 / ::1 / ::ffff:127.x）始终放行，无需 key。
+# 其他来源必须携带下列任一请求头：
+#     Authorization: Bearer <key>
+#   或 x-api-key: <key>
+#
+# 填了 key 即自动启用；也可显式写 enabled: true / false 覆盖。
+# 注意：enabled 为 true 但 keys 为空时，所有非本地请求都会被拒绝（避免静默失效）。
+auth:
+  # 需要开启时，把下面的 keys: [] 替换为以下任一种写法（两者完全等价）：
+  #
+  #   列表写法 —— 日志 auth.principal 记为 key1 / key2
+  #   keys:
+  #     - "sk-aaa"
+  #     - "sk-bbb"
+  #
+  #   映射写法 —— 日志 auth.principal 记为 team-a / ci
+  #   keys:
+  #     team-a: "sk-aaa"
+  #     ci: "sk-bbb"
+  #
+  # 值一律建议加双引号：不加引号时纯数字会被 YAML 解析成整数，
+  # 含特殊字符时可能整段解析失败（服务起不来）。
+  keys: []
+

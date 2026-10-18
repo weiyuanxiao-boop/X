@@ -73,6 +73,7 @@ PORT = start_upstream()
 os.environ["TEST_API_KEY"] = "sk-upstream-real"
 
 model_config = get_model_config()
+model_config._auth = {"enabled": False, "keys": {}}  # 验证脚本不依赖鉴权配置
 model_config._models["__claude__"] = {
     "upstream_model": "upstream-claude-x",
     "api_key_env": "TEST_API_KEY",

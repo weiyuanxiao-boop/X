@@ -34,6 +34,7 @@ class ModelConfig:
             self._config = yaml.safe_load(f)
         self._models = self._config.get("models", {})
         self._default = self._config.get("default_model", "")
+        self._auth = self._parse_auth(self._config.get("auth"))
         
         # Load aliases from separate file
         if aliases_path.exists():
@@ -41,6 +42,39 @@ class ModelConfig:
                 self._aliases = yaml.safe_load(f) or {}
         else:
             self._aliases = {}
+
+    @staticmethod
+    def _parse_auth(raw) -> dict:
+        """解析 auth 配置。
+
+        keys 支持两种写法：
+            keys: ["sk-a", "sk-b"]              -> 名字为 key1 / key2
+            keys: {team-a: "sk-a", ci: "sk-b"}  -> 名字用于日志 auth.principal
+
+        enabled 省略时按「keys 是否为空」推断：配了 key 即启用。
+        """
+        if not isinstance(raw, dict):
+            raw = {}
+
+        keys: dict[str, str] = {}
+        keys_raw = raw.get("keys") or []
+        if isinstance(keys_raw, dict):
+            for name, value in keys_raw.items():
+                if value:
+                    keys[str(name)] = str(value)
+        elif isinstance(keys_raw, list):
+            for index, value in enumerate(keys_raw, 1):
+                if value:
+                    keys[f"key{index}"] = str(value)
+
+        enabled = raw.get("enabled")
+        if enabled is None:
+            enabled = bool(keys)
+
+        return {"enabled": bool(enabled), "keys": keys}
+
+    def get_auth_config(self) -> dict:
+        return self._auth
     
     def save_aliases(self):
         """Save aliases to aliases.yaml file."""

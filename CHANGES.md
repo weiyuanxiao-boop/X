@@ -68,6 +68,33 @@
 
 ---
 
+### 新增访问鉴权（本地放行，远程校验 key）
+
+**需求**：非本地客户端必须携带正确 key；本地连接（localhost / 127.x.x.x）不校验；key 在 yaml 配置。
+
+**改动**：
+- `app/auth.py`（新增）：
+  - `is_loopback()` 覆盖 `localhost`、`127.0.0.0/8`、`::1`、IPv4-mapped IPv6（`::ffff:127.x`）
+  - `extract_token()` 支持 `Authorization: Bearer <key>`、`x-api-key: <key>`、裸 `Authorization: <key>`
+  - `secrets.compare_digest` 做常量时间比较
+- `app/config.py`：解析 `auth` 段。`keys` 支持列表（名字记为 key1/key2）与映射（名字进日志）；
+  `enabled` 省略时按 keys 是否为空推断，填了 key 即启用
+- `app/main.py`：加 HTTP 中间件统一鉴权。`/health` 放行，其余路径（含 `/v1/models`、`/docs`、`/v1/aliases`）都要过
+- 401 按下游协议返回标准错误结构；对话端点留痕，但**请求体不落盘**（避免未认证内容写满磁盘）
+- 日志记录新增 `auth` 字段：`{"mode": "local|key|disabled|denied", "principal": "<key 名>"}`，不记录 key 明文
+- `model_config.yaml` 增加 `auth` 段，默认 `keys: []`（即关闭），填 key 即生效
+
+**安全细节**：
+- `enabled: true` 且 `keys` 为空时 **fail closed**（非本地全部 401），启动时打 warning
+- 下游用于鉴权的 `Authorization` / `x-api-key` 不会转发给上游，转发层会用上游凭证覆盖
+- 被拒请求不记录原始请求体
+
+**验证**：`verify_auth.py` 27/27 通过——四种回环形式放行、远程无 key/错 key/正确 key、
+三种携带方式、`/health` 与 `/v1/models` 的差异、下游 key 不泄漏到上游、fail closed、日志留痕。
+回归：`verify_passthrough.py` 29/29、`verify_logging.py` 12/12、`test_proxy.py` 16/16。
+
+---
+
 ## 历史改动 (2026-04-29)
 
 ### 移除交叉协议转换，仅支持同协议透传

@@ -97,6 +97,7 @@ class ConversationLogger:
         upstream_model: str,
         request,
         response,
+        auth: dict | None = None,
         when: datetime | None = None,
     ) -> str:
         """追加一条完整对话记录，返回会话 ID。
@@ -104,6 +105,7 @@ class ConversationLogger:
         Args:
             request:  下游原始请求（解析后的完整对象，未裁剪）
             response: 上游返回摘要，含 status / headers / body 或 events / error
+            auth:     鉴权结果摘要 {"mode": ..., "principal": ...}，不记录 key 明文
         """
         stamp = when or datetime.now().astimezone()
         conv_id = str(uuid.uuid4())
@@ -116,6 +118,8 @@ class ConversationLogger:
             "request": request,
             "response": response,
         }
+        if auth:
+            entry["auth"] = auth
 
         # 单行 JSON，确保写入落为一次 write 系统调用
         line = json.dumps(entry, ensure_ascii=False, default=str) + "\n"

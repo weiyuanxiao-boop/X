@@ -4,6 +4,7 @@ import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
+from .auth import authenticate
 from .config import get_logger, get_model_config
 from .logger import logger as conversation_logger
 from .proxy import (
@@ -26,6 +27,18 @@ app = FastAPI(title="LLM Proxy Gateway", version="2.0.0")
 # 流式日志事件上限，防止超长响应把日志撑爆
 _SSE_MAX_EVENTS = 5000
 
+# 需要记录鉴权失败的对话端点（其他路径不写对话日志，避免噪音）
+_CONVERSATION_PATHS = {"/v1/messages", "/v1/chat/completions"}
+
+_auth_config = model_config.get_auth_config()
+if _auth_config["enabled"]:
+    if _auth_config["keys"]:
+        logger.info(f"Access auth ENABLED ({len(_auth_config['keys'])} key(s)); loopback bypassed")
+    else:
+        logger.warning("Access auth ENABLED but no keys configured — all non-local requests will be rejected")
+else:
+    logger.info("Access auth disabled — all requests allowed")
+
 
 def _error(status_code: int, error_type: str, message: str, downstream_format: str) -> JSONResponse:
     """按下游协议返回标准错误结构，便于官方 SDK 正确解析。"""
@@ -34,6 +47,41 @@ def _error(status_code: int, error_type: str, message: str, downstream_format: s
     else:
         content = {"error": {"message": message, "type": error_type, "param": None, "code": None}}
     return JSONResponse(status_code=status_code, content=content)
+
+
+# ── 访问鉴权 ──────────────────────────────────────────────────
+
+@app.middleware("http")
+async def auth_middleware(request: Request, call_next):
+    """本地连接放行；非本地必须携带 model_config.yaml 中配置的 key。
+
+    /health 不做鉴权（留给探活），其余路径（含 /v1/models、/docs）都要过。
+    """
+    path = request.url.path
+    if path == "/health":
+        return await call_next(request)
+
+    result = authenticate(request)
+    request.state.auth = result
+
+    if result.allowed:
+        return await call_next(request)
+
+    client_id = request.client.host if request.client else "unknown"
+    if path in _CONVERSATION_PATHS:
+        # 不落盘未鉴权的请求体，避免任意内容写入磁盘
+        conversation_logger.log_exchange(
+            client_id=client_id,
+            downstream_model="unknown",
+            upstream_model="",
+            request={"__withheld__": "unauthenticated request body not logged"},
+            response={"status": 401, "error": result.reason},
+            auth={"mode": result.mode, "principal": result.principal},
+        )
+    logger.warning(f"401 {client_id} {path}: {result.reason}")
+
+    downstream_format = "anthropic" if path == "/v1/messages" else "openai"
+    return _error(401, "authentication_error", result.reason, downstream_format)
 
 
 # ── 统一转发逻辑 ───────────────────────────────────────────────
@@ -47,6 +95,11 @@ async def _handle(request: Request, downstream_format: str) -> Response:
     """
     raw_body = await request.body()
     client_id = request.client.host if request.client else "unknown"
+    auth_result = getattr(request.state, "auth", None)
+    auth_summary = (
+        {"mode": auth_result.mode, "principal": auth_result.principal}
+        if auth_result else None
+    )
 
     try:
         payload = json.loads(raw_body)
@@ -60,6 +113,7 @@ async def _handle(request: Request, downstream_format: str) -> Response:
             upstream_model="",
             request={"__raw__": raw_body.decode("utf-8", "replace")[:4000]},
             response={"status": 400, "error": message},
+            auth=auth_summary,
         )
         return _error(400, "invalid_request_error", message, downstream_format)
 
@@ -75,6 +129,7 @@ async def _handle(request: Request, downstream_format: str) -> Response:
             upstream_model="",
             request=payload,
             response={"status": 400, "error": str(exc)},
+            auth=auth_summary,
         )
         return _error(400, "invalid_request_error", str(exc), downstream_format)
 
@@ -96,6 +151,7 @@ async def _handle(request: Request, downstream_format: str) -> Response:
             upstream_model=upstream["upstream_model"],
             request=payload,
             response={"status": 502, "error": message},
+            auth=auth_summary,
         )
         return _error(502, "upstream_error", message, downstream_format)
 
@@ -138,6 +194,7 @@ async def _handle(request: Request, downstream_format: str) -> Response:
                         "stream": True,
                         "events": events,
                     },
+                    auth=auth_summary,
                 )
 
         return StreamingResponse(
@@ -162,6 +219,7 @@ async def _handle(request: Request, downstream_format: str) -> Response:
             "headers": response_headers,
             "body": parse_json_body(upstream_body),
         },
+        auth=auth_summary,
     )
     logger.info(f"Completed request {conv_id} for {model_name} (status {resp.status_code})")
 
