@@ -2,7 +2,50 @@
 
 本文档总结了项目的所有重要改动和对应的测试验证。
 
-## 最新改动 (2026-04-29)
+## 最新改动 (2026-10-18)
+
+### 改为字节级透传，请求不再经过 Pydantic 模型
+
+**问题**：原先用 `ClaudeRequest` / `OpenAIRequest` 接收请求体，只给顶层模型开了
+`extra="allow"`，嵌套模型（`TextContent` / `ToolUseContent` / `Message` /
+`OpenAIMessage` 等）都会丢弃未声明字段，并且会把默认值写回 body。
+"完全透传"名不副实，实测确认的参数丢失：
+
+| 丢失项 | 后果 |
+|--------|------|
+| `cache_control`（system / text / tool_use / tool_result） | prompt caching 失效 |
+| `tool_calls` / `tool_call_id` / `reasoning_content` | 多轮 function calling 断裂 |
+| `document` / `redacted_thinking` / `server_tool_use` block | Pydantic 校验失败，下游收到 422 |
+| 下游全部请求头（含 `anthropic-beta`） | 1M 上下文、interleaved thinking 等特性不可用 |
+| 默认值注入 `temperature=1.0` / `top_p=1.0` / `stream=false` | 下游未传的参数被强制补上 |
+| 上游 4xx → `raise_for_status()` | 下游收到 500，上游错误体与 `retry-after` 全部丢失 |
+| 非流式响应头 | `request-id`、`anthropic-ratelimit-*` 丢失 |
+
+**改动内容**：
+- `app/main.py`：端点签名改为 `request: Request`，用 `await request.body()` 取原始字节
+- `app/proxy.py`：
+  - `rewrite_top_level_model()` 按字节扫描，只替换顶层 `model` 的值，其余字节（字段顺序、
+    未知字段、unicode、数字写法、空格）原样保留
+  - `build_upstream_headers()` 透传下游业务头，仅替换鉴权头与 `content-type`
+  - `filter_response_headers()` 剔除逐跳头与 `content-encoding`，保留限流/请求 ID 等
+  - `build_body()` 在 body 缺少顶层 `model` 时退化为重新序列化
+- 响应不再 `resp.json()` 往返：原样回传上游 `status_code` + 原始 bytes + 响应头
+- 流式改用 `aiter_bytes()` 原样转发，不再逐行重建，content-type 沿用上游
+- 上游不可达返回 502（原为 500）
+- 本地错误（跨协议 / 非法 JSON）按下游协议返回标准错误结构
+- 流式判定改为跟随上游 `content-type`，不再依据下游 `stream` 字段猜测
+- 删除 `app/models.py`（请求模型不再参与转发链路）
+
+**明确不支持**：Claude ↔ OpenAI 跨协议。`/v1/messages` 只能路由到配置了
+`anthropic` base_url 的模型，`/v1/chat/completions` 只能路由到 `openai`，否则 400。
+
+**验证**：
+- `verify_passthrough.py`：29 项保真度断言（请求体/请求头/响应体/响应头/流式/错误码/跨协议）
+- `test_proxy.py`：16/16 通过
+
+---
+
+## 历史改动 (2026-04-29)
 
 ### 移除交叉协议转换，仅支持同协议透传
 **改动内容**:
@@ -90,6 +133,6 @@ python test_proxy.py --list
 
 ## 测试状态
 
-✅ **15/15 测试通过 (100.0%)**
+✅ **16/16 通过 (100.0%)** + `verify_passthrough.py` 29/29
 
 所有核心功能都有对应的测试验证。

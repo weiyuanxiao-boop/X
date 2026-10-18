@@ -1,16 +1,18 @@
 # LLM Proxy Gateway
 
-基于 FastAPI 的 LLM 代理网关，支持 OpenAI 和 Claude 两种 API 协议，提供同协议完全透传、消息日志记录和流式/非流式响应。
+基于 FastAPI 的 LLM 代理网关，支持 OpenAI 和 Claude 两种 API 协议，提供同协议字节级透传、消息日志记录和流式/非流式响应。
 
 ## 功能特性
 
 - **双协议支持** — 同时支持 OpenAI (`/v1/chat/completions`) 和 Claude (`/v1/messages`) 两种 API 格式
-- **同协议透传** — 下游与上游协议一致时完全透传，不修改任何参数，保留所有原始字段
+- **字节级透传** — 下游请求体原样发往上游，唯一改动的字节是顶层 `model` 字段的值。字段顺序、未知字段、嵌套结构、unicode 转义、数字写法全部保持原样；响应体同样按原始字节回传，不重新序列化
+- **请求头/响应头透传** — 下游业务头（`anthropic-beta`、`openai-organization` 等）原样转发，上游限流头、`request-id` 原样回传
+- **跨协议不支持** — Claude ↔ OpenAI 之间不做转换，路由阶段直接返回 400
 - **多模型路由** — 通过 `model_config.yaml` 配置下游模型名到上游提供商的映射
 - **模型别名** — 支持任意名称映射到已有模型
-- **多格式支持** — 一个模型可同时配置 OpenAI 和 Claude 两种接入格式，自动选择最优路径
-- **消息日志** — 原样记录所有请求和响应参数到本地 JSON 文件
-- **流式 + 非流式** — 两种模式均完整记录日志
+- **多格式支持** — 一个模型可同时配置 OpenAI 和 Claude 两种接入格式，按下游协议自动选择
+- **消息日志** — 记录完整请求与响应（含流式事件序列）到本地 JSON 文件
+- **流式 + 非流式** — 两种模式均原样转发并记录日志
 
 ## 快速开始
 
@@ -85,7 +87,8 @@ r = httpx.post("http://localhost:4936/v1/messages", json={
     "model": "deepseek-v4-flash-openai",  # 只支持 OpenAI
     "messages": [{"role": "user", "content": "你好"}],
 })
-# 返回: {"error": "Model 'deepseek-v4-flash-openai' does not support Anthropic/Claude API format..."}
+# 返回: {"type":"error","error":{"type":"invalid_request_error",
+#        "message":"Model 'deepseek-v4-flash-openai' does not support Anthropic/Claude API format..."}}
 ```
 
 ## 配置说明
@@ -160,12 +163,14 @@ aliases:
 
 | 下游端点 | 上游配置 | 行为 |
 |---------|---------|------|
-| `/v1/messages` (Claude) | 有 `anthropic` URL | ✅ 直接透传 |
+| `/v1/messages` (Claude) | 有 `anthropic` URL | ✅ 字节级透传 |
 | `/v1/messages` (Claude) | 只有 `openai` URL | ❌ 返回 400 错误 |
-| `/v1/chat/completions` (OpenAI) | 有 `openai` URL | ✅ 直接透传 |
+| `/v1/chat/completions` (OpenAI) | 有 `openai` URL | ✅ 字节级透传 |
 | `/v1/chat/completions` (OpenAI) | 只有 `anthropic` URL | ❌ 返回 400 错误 |
 
 **格式优先选择：** 当模型同时配置了两种格式时，自动选择与下游相同的格式，避免转换。
+
+**不支持跨协议转换：** Claude ↔ OpenAI 之间不做任何字段映射。若下游协议与上游可用格式不一致，直接返回 400，不会尝试转换。
 
 ## 日志
 
@@ -178,12 +183,12 @@ aliases:
 
 对话记录以 JSON 格式保存在 `logs/conversations_{下游模型}_{上游模型}_{日期}.json` 文件中。
 
-### 日志结构
+`request` 记录下游发出的完整 JSON（未做任何字段裁剪），`response` 记录上游返回的状态码、响应头与响应体。
 
 ```json
 {
   "id": "uuid",
-  "timestamp": "2026-04-29T10:00:00+00:00",
+  "timestamp": "2026-10-18T10:00:00+00:00",
   "client_id": "127.0.0.1",
   "downstream_model": "deepseek-v4-flash-openai",
   "upstream_model": "deepseek-v4-flash",
@@ -192,24 +197,22 @@ aliases:
     "messages": [{"role": "user", "content": "你好"}],
     "temperature": 0.7,
     "max_tokens": 1000,
-    "tools": [...],
-    ...  // 所有请求参数原样记录
+    "tools": [...]
   },
   "response": {
-    "id": "...",
-    "choices": [...],
-    "usage": {...},
-    ...  // 所有响应参数原样记录
+    "status": 200,
+    "headers": {"content-type": "application/json", "request-id": "..."},
+    "body": {"id": "...", "choices": [...], "usage": {...}},
+    "timestamp": "2026-10-18T10:00:02+00:00"
   }
 }
 ```
 
 ### 流式日志
 
-流式模式下，日志会收集所有流式数据块，重组为与非流式一致的格式：
-
-- **OpenAI 格式**: 收集 `content`, `reasoning_content`, `tool_calls`
-- **Claude 格式**: 收集 `text`, `thinking`, `tool_use`
+流式模式下 `response` 不带 `body`，改为 `stream: true` + `events`：按 SSE 逐条解析出的
+`data:` JSON 原样保存，事件数量上限 5000 条，超出时追加 `{"__truncated__": true}`。
+这种记录方式不会丢失上游事件里的任何字段（如 `usage`、`cache_read_input_tokens`）。
 
 ## API 端点
 
@@ -222,7 +225,20 @@ aliases:
 
 ## 测试
 
-运行测试套件验证所有功能：
+### 透传保真度验证（离线，推荐先跑）
+
+`verify_passthrough.py` 会自己起一个本地假上游，记录收到的原始字节，逐项比对
+「下游发出」与「上游收到」、「上游返回」与「下游收到」是否逐字节一致，不依赖真实 API Key：
+
+```bash
+python verify_passthrough.py
+```
+
+覆盖 29 项断言：请求体逐字节一致、`cache_control` / `document` / `redacted_thinking` 保留、
+不注入默认值、请求头透传、`tool_calls` / `tool_call_id` 保留、响应体与响应头透传、
+上游 400 不被改写为 500、`retry-after` 保留、流式逐字节等价、跨协议 400。
+
+### 端到端测试（需服务在 4936 运行 + 真实上游）
 
 ```bash
 # 运行所有测试
@@ -260,14 +276,14 @@ python test_proxy.py --list
 ```
 D:\ProjectsMy\X\
 ├── app/
-│   ├── main.py          # FastAPI 应用，API 端点
+│   ├── main.py          # FastAPI 应用，API 端点与转发编排
 │   ├── config.py        # 配置加载，日志设置
-│   ├── models.py        # Pydantic 数据模型
-│   ├── proxy.py         # 上游调用（完全透传）
+│   ├── proxy.py         # 字节级透传（model 改写、头过滤、SSE 采集）
 │   └── logger.py        # 对话日志记录
 ├── model_config.yaml    # 模型路由配置
 ├── .env                 # 环境变量与服务配置
-├── test_proxy.py        # 测试套件
+├── test_proxy.py        # 端到端测试套件（需真实上游）
+├── verify_passthrough.py # 透传保真度验证（自带假上游，离线可跑）
 └── logs/                # 日志输出目录
 ```
 

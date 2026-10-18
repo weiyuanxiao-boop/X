@@ -715,13 +715,17 @@ async def test_unsupported_protocol_error():
             assert response.status_code == 400, f"期望返回 400 错误，实际返回 {response.status_code}"
             
             # 验证错误响应包含错误信息
+            # 错误体按协议标准返回：anthropic 为 {"type":"error","error":{...}}，
+            # openai 为 {"error":{...}}；此处兼容对象与纯字符串两种写法。
             error_data = response.json()
             assert "error" in error_data, "错误响应应包含 error 字段"
-            assert "does not support" in error_data["error"] or "not support" in error_data["error"].lower(), \
+            error_field = error_data["error"]
+            error_text = error_field["message"] if isinstance(error_field, dict) else str(error_field)
+            assert "does not support" in error_text or "not support" in error_text.lower(), \
                 "错误信息应说明协议不支持"
             
             print_result(test_name, True, 
-                f"正确返回 400 错误：{error_data['error'][:50]}..."
+                f"正确返回 400 错误：{error_text[:50]}..."
             )
             return True
     except Exception as e:
