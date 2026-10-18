@@ -1,5 +1,7 @@
 # Model Aliases Configuration
 # Format: alias_name: target_model
 
-cc-coder: qwen3.6-plus
-cc-coder2: deepseek-v4-pro
+cc-coder: deepseek-v4-pro
+cc-coder-opus: deepseek-v4-pro
+cc-coder-sonet: deepseek-v4-pro
+cc-coder-haiku: deepseek-v4-flash
