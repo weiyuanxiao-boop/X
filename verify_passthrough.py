@@ -90,6 +90,13 @@ model_config._models["__openai_only__"] = {
     "api_key_env": "TEST_API_KEY",
     "base_url": {"openai": f"http://127.0.0.1:{PORT}"},
 }
+# legacy 格式（字符串 base_url + provider 字段），用于验证跨协议校验
+model_config._models["__legacy_anthropic__"] = {
+    "upstream_model": "upstream-legacy",
+    "provider": "anthropic",
+    "api_key_env": "TEST_API_KEY",
+    "base_url": f"http://127.0.0.1:{PORT}",
+}
 
 client = TestClient(proxy_app, raise_server_exceptions=False)
 
@@ -161,7 +168,7 @@ client.post("/v1/messages", content=b'{"model":"__claude__","messages":[]}',
 h = last_request()["headers"]
 check("anthropic-beta 已透传", h.get("anthropic-beta") == "interleaved-thinking-2025-05-14", str(h))
 check("anthropic-version 用下游的", h.get("anthropic-version") == "2024-01-01", str(h.get("anthropic-version")))
-check("自定义头已透传", h.get("x-custom-trace") == "trace-123")
+check("非白名单自定义头被丢弃", "x-custom-trace" not in h, str(h.get("x-custom-trace")))
 check("x-api-key 已换为上游凭证", h.get("x-api-key") == "sk-upstream-real", str(h.get("x-api-key")))
 
 # ══════════════════════════════════════════════════════════════
@@ -273,9 +280,61 @@ r = client.post("/v1/chat/completions", content=b'{"model":"__claude__","message
                 headers={"content-type": "application/json"})
 check("OpenAI 端点打仅 Anthropic 上游 → 400", r.status_code == 400, f"got {r.status_code}")
 
+r = client.post("/v1/responses", content=b'{"model":"__legacy_anthropic__","input":"hi"}',
+                headers={"content-type": "application/json"})
+check("legacy(provider=anthropic) 打 Responses 端点 → 400", r.status_code == 400,
+      f"got {r.status_code} {r.text[:120]}")
+
+r = client.post("/v1/messages", content=b'{"model":"__legacy_anthropic__","messages":[]}',
+                headers={"content-type": "application/json"})
+check("legacy 模型同协议仍可用", r.status_code == 200, f"got {r.status_code}")
+
 r = client.post("/v1/messages", content=b'not json at all',
                 headers={"content-type": "application/json"})
 check("非法 JSON → 400", r.status_code == 400, f"got {r.status_code}")
+
+# ══════════════════════════════════════════════════════════════
+print()
+print("=" * 78)
+print("H · Responses API 端点")
+print("=" * 78)
+
+raw_responses = (
+    b'{"model":"__openai__","instructions":"be brief","input":['
+    b'{"type":"message","role":"user","content":[{"type":"input_text",'
+    b'"text":"\xe4\xbd\xa0\xe5\xa5\xbd"}]}],'
+    b'"max_output_tokens":128,"reasoning":{"effort":"low"},'
+    b'"text":{"format":{"type":"text"}},'
+    b'"tools":[{"type":"function","name":"f","parameters":{"type":"object"}}],'
+    b'"store":false,"previous_response_id":null}'
+)
+captured["plan"] = {"status": 200, "body": b'{"object":"response","output":[]}'}
+r = client.post("/v1/responses", content=raw_responses,
+                headers={"content-type": "application/json"})
+req = last_request()
+
+check("转发到上游 /v1/responses", req["path"] == "v1/responses", req["path"])
+exp_resp = raw_responses.replace(b'"__openai__"', b'"upstream-gpt-x"')
+check("请求体除 model 外逐字节一致", req["body"] == exp_resp,
+      f"\n    got={req['body'][:300]!r}\n    exp={exp_resp[:300]!r}")
+check("instructions / reasoning / text / tools 结构保留",
+      all(k in req["body"] for k in (b'"instructions"', b'"reasoning"', b'"text"', b'"tools"')))
+check("响应体逐字节回传", r.content == b'{"object":"response","output":[]}')
+
+chunks_r = [
+    b'event: response.created\ndata: {"type":"response.created"}\n\n',
+    b'event: response.output_text.delta\ndata: {"type":"response.output_text.delta",',
+    b'"delta":"\xe4\xbd\xa0"}\n\n',
+    b'event: response.completed\ndata: {"type":"response.completed"}\n',
+]
+captured["plan"] = {"stream": True, "chunks": chunks_r}
+r = client.post("/v1/responses",
+                content=b'{"model":"__openai__","input":"hi","stream":true}',
+                headers={"content-type": "application/json"})
+check("Responses 流式逐字节一致", r.content == b"".join(chunks_r),
+      f"\n    got={r.content[:200]!r}")
+check("流式 content-type 沿用上游",
+      "text/event-stream" in r.headers.get("content-type", ""))
 
 # ══════════════════════════════════════════════════════════════
 print()

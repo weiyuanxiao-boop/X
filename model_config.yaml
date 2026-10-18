@@ -109,10 +109,11 @@ default_model: deepseek-v4-flash
 #     Authorization: Bearer <key>
 #   或 x-api-key: <key>
 #
-# 填了 key 即自动启用；也可显式写 enabled: true / false 覆盖。
-# 注意：enabled 为 true 但 keys 为空时，所有非本地请求都会被拒绝（避免静默失效）。
+# 默认 enabled: true。keys 为空时所有非本地请求都会被拒绝（fail closed），
+# 所以对外提供服务前必须先把 key 填进来。
 auth:
-  # 需要开启时，把下面的 keys: [] 替换为以下任一种写法（两者完全等价）：
+  enabled: true
+  # 填 key（两种写法等价，任选其一）：
   #
   #   列表写法 —— 日志 auth.principal 记为 key1 / key2
   #   keys:
@@ -124,7 +125,20 @@ auth:
   #     team-a: "sk-aaa"
   #     ci: "sk-bbb"
   #
-  # 值一律建议加双引号：不加引号时纯数字会被 YAML 解析成整数，
-  # 含特殊字符时可能整段解析失败（服务起不来）。
+  # 值一律加双引号：不加引号时纯数字会被 YAML 解析成整数。
   keys: []
+
+# ── 资源限制 ──────────────────────────────────────────────────
+limits:
+  max_body_mb: 32             # 单请求体上限，超出返回 413；0 = 不限
+  rate_limit_per_minute: 0    # 每个来源 IP 每分钟请求数上限，0 = 不限
+  max_logged_body_mb: 8       # 单条日志中 request 的最大字节数，超出只记元信息
+
+# ── 上游连接 ──────────────────────────────────────────────────
+upstream:
+  # 是否读取 HTTP_PROXY / HTTPS_PROXY / ALL_PROXY 等环境变量。
+  # 默认 false：避免 API key 与对话内容被环境中的代理截获。
+  trust_env: false
+  # 需要走代理时显式指定，例如 "http://127.0.0.1:7890"；null 表示直连。
+  proxy: null
 

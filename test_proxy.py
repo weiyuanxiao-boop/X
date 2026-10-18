@@ -733,6 +733,45 @@ async def test_unsupported_protocol_error():
         return False
 
 
+async def test_openai_responses_non_stream():
+    """测试 OpenAI Responses API 非流式 [#17]
+
+    验证 /v1/responses 能正常透传，返回标准 response 对象。
+    """
+    test_name = "OpenAI Responses (Non-Stream) [#17]"
+    try:
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            response = await client.post(
+                f"{BASE_URL}/v1/responses",
+                json={
+                    "model": OPENAI_MODEL,
+                    "input": "1+1等于几？只输出数字",
+                    "max_output_tokens": 64,
+                },
+                headers={"Content-Type": "application/json"}
+            )
+            assert response.status_code == 200, \
+                f"期望 200，实际 {response.status_code}: {response.text[:200]}"
+
+            data = response.json()
+            assert data.get("object") == "response", \
+                f"期望 object=response，实际 {data.get('object')}"
+            assert isinstance(data.get("output"), list), "响应应包含 output 列表"
+
+            text = ""
+            for item in data.get("output", []):
+                for block in item.get("content", []) or []:
+                    if block.get("type") == "output_text":
+                        text += block.get("text", "")
+
+            print_result(test_name, True,
+                         f"output items: {len(data['output'])}, text: {text[:40]!r}")
+            return True
+    except Exception as e:
+        print_result(test_name, False, str(e)[:120])
+        return False
+
+
 # 所有测试用例列表
 ALL_TESTS = [
     # 核心协议测试
@@ -756,6 +795,8 @@ ALL_TESTS = [
     test_tool_use_claude_to_claude,     # #15
     # 错误处理测试
     test_unsupported_protocol_error,    # #16
+    # Responses API
+    test_openai_responses_non_stream,   # #17
 ]
 
 

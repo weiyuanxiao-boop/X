@@ -35,6 +35,8 @@ class ModelConfig:
         self._models = self._config.get("models", {})
         self._default = self._config.get("default_model", "")
         self._auth = self._parse_auth(self._config.get("auth"))
+        self._limits = self._parse_limits(self._config.get("limits"))
+        self._upstream = self._parse_upstream(self._config.get("upstream"))
         
         # Load aliases from separate file
         if aliases_path.exists():
@@ -51,7 +53,8 @@ class ModelConfig:
             keys: ["sk-a", "sk-b"]              -> 名字为 key1 / key2
             keys: {team-a: "sk-a", ci: "sk-b"}  -> 名字用于日志 auth.principal
 
-        enabled 省略时按「keys 是否为空」推断：配了 key 即启用。
+        **默认 enabled=True**（安全优先）。keys 为空时非本地请求一律拒绝（fail closed），
+        本地回环地址仍放行。需要临时关闭时显式写 enabled: false。
         """
         if not isinstance(raw, dict):
             raw = {}
@@ -69,21 +72,72 @@ class ModelConfig:
 
         enabled = raw.get("enabled")
         if enabled is None:
-            enabled = bool(keys)
+            enabled = True
 
         return {"enabled": bool(enabled), "keys": keys}
 
+    @staticmethod
+    def _parse_limits(raw) -> dict:
+        """解析资源限制。0 表示不限制（max_body_mb / max_logged_body_mb 除外）。"""
+        if not isinstance(raw, dict):
+            raw = {}
+
+        def _int(name: str, default: int) -> int:
+            try:
+                value = int(raw.get(name, default))
+            except (TypeError, ValueError):
+                return default
+            return value if value >= 0 else default
+
+        return {
+            "max_body_mb": _int("max_body_mb", 32),
+            "rate_limit_per_minute": _int("rate_limit_per_minute", 0),
+            "max_logged_body_mb": _int("max_logged_body_mb", 8),
+        }
+
+    @staticmethod
+    def _parse_upstream(raw) -> dict:
+        """解析上游连接配置。
+
+        trust_env 默认 False：不读取 HTTP_PROXY / HTTPS_PROXY / ALL_PROXY 等环境变量，
+        避免 API key 与对话内容被环境中的代理截获。需要走代理时必须显式配置 proxy。
+        """
+        if not isinstance(raw, dict):
+            raw = {}
+
+        trust_env = raw.get("trust_env")
+        proxy = raw.get("proxy")
+        return {
+            "trust_env": False if trust_env is None else bool(trust_env),
+            "proxy": str(proxy) if proxy else None,
+        }
+
     def get_auth_config(self) -> dict:
         return self._auth
+
+    def get_limits(self) -> dict:
+        return self._limits
+
+    def get_upstream_config(self) -> dict:
+        return self._upstream
     
     def save_aliases(self):
-        """Save aliases to aliases.yaml file."""
+        """Save aliases to aliases.yaml file.
+
+        使用 yaml 序列化而不是字符串拼接：alias / target 中的换行、冒号、
+        引号等会被正确转义，避免写坏文件或注入额外 YAML 结构。
+        """
         aliases_path = CONFIG_DIR / "aliases.yaml"
+        body = yaml.safe_dump(
+            self._aliases,
+            allow_unicode=True,
+            default_flow_style=False,
+            sort_keys=False,
+        )
         with open(aliases_path, "w", encoding="utf-8") as f:
             f.write("# Model Aliases Configuration\n")
             f.write("# Format: alias_name: target_model\n\n")
-            for alias, target in self._aliases.items():
-                f.write(f"{alias}: {target}\n")
+            f.write(body)
 
     def _resolve(self, model_name: str) -> str:
         return self._aliases.get(model_name, model_name)
@@ -159,6 +213,13 @@ class ModelConfig:
             provider = cfg.get("provider")
             if not provider:
                 raise ValueError(f"No provider specified for model {model_name}")
+            # legacy 格式同样要校验协议：否则会用错误的鉴权头去打上游，
+            # 下游只能收到上游的 401/404，看不出真正原因
+            if downstream_format and provider != downstream_format:
+                raise ValueError(
+                    f"Model '{model_name}' only supports {provider} API format "
+                    f"(downstream requested {downstream_format})"
+                )
 
         return {
             "provider": provider,

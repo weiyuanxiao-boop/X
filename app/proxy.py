@@ -15,7 +15,7 @@ from typing import Mapping
 
 import httpx
 
-from .config import get_logger
+from .config import get_logger, get_model_config
 
 logger = get_logger("proxy")
 
@@ -36,21 +36,38 @@ _HOP_BY_HOP = {
     "upgrade",
 }
 
-# 请求侧额外剔除：这些必须由本服务重新决定
-_DROP_REQUEST = _HOP_BY_HOP | {
-    "host",
-    "content-length",
-    "content-type",     # 统一按 application/json 发送
-    "accept-encoding",  # 交给 httpx 协商，避免解压后仍声称压缩
-    "authorization",    # 换成上游凭证
-    "x-api-key",        # 换成上游凭证
-}
+# ── 请求头采用白名单 ──────────────────────────────────────────
+# 只放行协议相关头。cookie / x-forwarded-for / x-real-ip / referer / origin /
+# 任意自定义头都不会到达上游，避免把下游会话凭证或内网信息带出去。
+_PASS_HEADERS_COMMON = {"accept", "accept-language", "user-agent"}
+_PASS_HEADERS_ANTHROPIC = {"anthropic-beta", "anthropic-version"}
+_PASS_HEADERS_OPENAI = {"openai-organization", "openai-project", "openai-beta"}
 
-# 响应侧额外剔除：body 已被 httpx 解压且长度可变
+# 响应侧额外剔除：body 已被 httpx 解压且长度可变；cookie 与 CORS 头不应由中转层转发；
+# server 头会暴露上游技术栈
 _DROP_RESPONSE = _HOP_BY_HOP | {
     "content-length",
     "content-encoding",
+    "set-cookie",
+    "set-cookie2",
+    "server",
 }
+_DROP_RESPONSE_PREFIXES = ("access-control-", "x-internal-")
+
+
+def create_client() -> httpx.AsyncClient:
+    """构造上游客户端。
+
+    ``trust_env`` 默认为 False：不读取 HTTP_PROXY / HTTPS_PROXY / ALL_PROXY 等
+    环境变量，避免 API key 与对话内容被环境中的代理截获。需要走代理时，在
+    ``model_config.yaml`` 的 ``upstream.proxy`` 显式指定地址。
+    """
+    config = get_model_config().get_upstream_config()
+    return httpx.AsyncClient(
+        timeout=UPSTREAM_TIMEOUT,
+        trust_env=config["trust_env"],
+        proxy=config["proxy"],
+    )
 
 
 def build_upstream_headers(
@@ -58,24 +75,23 @@ def build_upstream_headers(
     downstream_format: str,
     upstream: dict,
 ) -> dict:
-    """构造上游请求头。
+    """构造上游请求头（白名单）。
 
-    下游的业务头（anthropic-beta / openai-organization / accept / user-agent …）
-    一律透传；鉴权头换成上游凭证；anthropic-version 下游带了就用下游的。
+    仅放行 ``accept`` / ``user-agent`` / ``anthropic-beta`` / ``openai-organization``
+    等协议头；鉴权头换成上游凭证。
     """
-    headers = {}
-    lowered = set()
+    allowed = set(_PASS_HEADERS_COMMON)
+    allowed |= _PASS_HEADERS_ANTHROPIC if downstream_format == "anthropic" else _PASS_HEADERS_OPENAI
 
+    headers = {}
     for key, value in downstream_headers.items():
-        lower = key.lower()
-        if lower in _DROP_REQUEST:
-            continue
-        headers[key] = value
-        lowered.add(lower)
+        # 空值不参与覆盖：例如下游传了空的 anthropic-version，应回落到配置值
+        if key.lower() in allowed and value and value.strip():
+            headers[key] = value
 
     if downstream_format == "anthropic":
         headers["x-api-key"] = upstream["api_key"]
-        if "anthropic-version" not in lowered:
+        if "anthropic-version" not in {k.lower() for k in headers}:
             # 模型未配置 api_version 时给出官方稳定版本，避免发送空值
             headers["anthropic-version"] = upstream.get("api_version") or "2023-06-01"
     else:
@@ -86,13 +102,16 @@ def build_upstream_headers(
 
 
 def filter_response_headers(headers: httpx.Headers) -> dict:
-    """过滤上游响应头，保留限流、请求 ID 等下游排查所需信息。"""
+    """过滤上游响应头，保留限流、请求 ID 等下游排查所需信息。
+
+    剔除逐跳头、编码相关头、``set-cookie`` 与 ``access-control-*``。
+    """
     result: dict[str, str] = {}
     canonical: dict[str, str] = {}   # lower -> 实际使用的 key
 
     for key, value in headers.multi_items():
         lower = key.lower()
-        if lower in _DROP_RESPONSE:
+        if lower in _DROP_RESPONSE or lower.startswith(_DROP_RESPONSE_PREFIXES):
             continue
         if lower in canonical:
             used = canonical[lower]
@@ -184,15 +203,17 @@ def build_body(raw_body: bytes, payload: dict, upstream_model: str) -> bytes:
 
 # ── URL ───────────────────────────────────────────────────────
 
+# 下游端点 → 上游路径。三个端点都是同协议直通，不需要格式转换。
 _ENDPOINT_PATH = {
-    "anthropic": "/v1/messages",
-    "openai": "/v1/chat/completions",
+    "messages": "/v1/messages",              # Claude
+    "chat": "/v1/chat/completions",          # OpenAI Chat Completions
+    "responses": "/v1/responses",            # OpenAI Responses
 }
 
 
-def build_upstream_url(upstream: dict, downstream_format: str) -> str:
+def build_upstream_url(upstream: dict, endpoint: str) -> str:
     base = upstream["base_url"].rstrip("/")
-    return f"{base}{_ENDPOINT_PATH[downstream_format]}"
+    return f"{base}{_ENDPOINT_PATH[endpoint]}"
 
 
 # ── 响应识别 ──────────────────────────────────────────────────

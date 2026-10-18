@@ -1,4 +1,7 @@
 import json
+import re
+import threading
+import time
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
@@ -8,11 +11,11 @@ from .auth import authenticate
 from .config import get_logger, get_model_config
 from .logger import logger as conversation_logger
 from .proxy import (
-    UPSTREAM_TIMEOUT,
     build_body,
     build_upstream_headers,
     build_upstream_url,
     collect_sse_line,
+    create_client,
     filter_response_headers,
     is_event_stream,
     parse_json_body,
@@ -28,7 +31,7 @@ app = FastAPI(title="LLM Proxy Gateway", version="2.0.0")
 _SSE_MAX_EVENTS = 5000
 
 # 需要记录鉴权失败的对话端点（其他路径不写对话日志，避免噪音）
-_CONVERSATION_PATHS = {"/v1/messages", "/v1/chat/completions"}
+_CONVERSATION_PATHS = {"/v1/messages", "/v1/chat/completions", "/v1/responses"}
 
 _auth_config = model_config.get_auth_config()
 if _auth_config["enabled"]:
@@ -49,6 +52,66 @@ def _error(status_code: int, error_type: str, message: str, downstream_format: s
     return JSONResponse(status_code=status_code, content=content)
 
 
+# ── 资源限制 ──────────────────────────────────────────────────
+
+_ALIAS_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+
+_rate_buckets: dict[str, tuple[int, int]] = {}
+_rate_lock = threading.Lock()
+
+
+class _BodyTooLarge(Exception):
+    """请求体超过 limits.max_body_mb。"""
+
+
+def _rate_limited(client_id: str) -> bool:
+    """按来源做固定窗口限流（每分钟）。limits.rate_limit_per_minute=0 表示不限。"""
+    limit = model_config.get_limits()["rate_limit_per_minute"]
+    if limit <= 0:
+        return False
+
+    window = int(time.monotonic() // 60)
+    with _rate_lock:
+        start, count = _rate_buckets.get(client_id, (window, 0))
+        if start != window:
+            start, count = window, 0
+        count += 1
+        _rate_buckets[client_id] = (start, count)
+        if len(_rate_buckets) > 10000:      # 防止来源 IP 过多导致内存增长
+            for key in [k for k, v in _rate_buckets.items() if v[0] != window]:
+                _rate_buckets.pop(key, None)
+
+    return count > limit
+
+
+async def _read_body_limited(request: Request) -> bytes:
+    """边读边计数，超限立刻中断，避免把超大 body 整个读进内存。
+
+    ``limits.max_body_mb = 0`` 表示不限制。
+    """
+    mb = model_config.get_limits()["max_body_mb"]
+    limit = mb * 1024 * 1024 if mb > 0 else None
+
+    if limit is not None:
+        declared = request.headers.get("content-length")
+        if declared:
+            try:
+                if int(declared) > limit:
+                    raise _BodyTooLarge()
+            except ValueError:
+                pass
+
+    chunks: list[bytes] = []
+    total = 0
+    async for chunk in request.stream():
+        total += len(chunk)
+        if limit is not None and total > limit:
+            raise _BodyTooLarge()
+        chunks.append(chunk)
+
+    return b"".join(chunks)
+
+
 # ── 访问鉴权 ──────────────────────────────────────────────────
 
 @app.middleware("http")
@@ -61,13 +124,22 @@ async def auth_middleware(request: Request, call_next):
     if path == "/health":
         return await call_next(request)
 
+    client_id = request.client.host if request.client else "unknown"
+
+    # 限流先于鉴权：401 同样消耗配额，避免 key 爆破和日志放大
+    if _rate_limited(client_id):
+        logger.warning(f"429 {client_id} {path}: rate limit exceeded")
+        downstream_format = "anthropic" if path == "/v1/messages" else "openai"
+        response = _error(429, "rate_limit_error", "Too many requests", downstream_format)
+        response.headers["Retry-After"] = "60"
+        return response
+
     result = authenticate(request)
     request.state.auth = result
 
     if result.allowed:
         return await call_next(request)
 
-    client_id = request.client.host if request.client else "unknown"
     if path in _CONVERSATION_PATHS:
         # 不落盘未鉴权的请求体，避免任意内容写入磁盘
         conversation_logger.log_exchange(
@@ -86,14 +158,26 @@ async def auth_middleware(request: Request, call_next):
 
 # ── 统一转发逻辑 ───────────────────────────────────────────────
 
-async def _handle(request: Request, downstream_format: str) -> Response:
+async def _handle(request: Request, downstream_format: str, endpoint: str) -> Response:
     """同协议字节级透传。
 
+    Args:
+        downstream_format: 下游协议，决定上游 base_url 与鉴权头（anthropic / openai）
+        endpoint: 端点类型，决定上游路径（messages / chat / responses）
+    
     请求体、请求头、响应体的原始字节全部保持下游/上游发来的样子，
     只有顶层 model 字段的值被替换为路由到的 upstream_model。
     跨协议请求在路由阶段直接拒绝（400）。
     """
-    raw_body = await request.body()
+    try:
+        raw_body = await _read_body_limited(request)
+    except _BodyTooLarge:
+        limit_mb = model_config.get_limits()["max_body_mb"]
+        logger.warning(f"413 body exceeds {limit_mb}MB from "
+                       f"{request.client.host if request.client else 'unknown'}")
+        return _error(413, "request_too_large",
+                      f"Request body exceeds {limit_mb} MB", downstream_format)
+
     client_id = request.client.host if request.client else "unknown"
     auth_result = getattr(request.state, "auth", None)
     auth_summary = (
@@ -106,7 +190,9 @@ async def _handle(request: Request, downstream_format: str) -> Response:
         if not isinstance(payload, dict):
             raise ValueError("body must be a JSON object")
     except Exception as exc:
-        message = f"Request body is not a valid JSON object: {exc}"
+        # 细节只进服务日志，不回显给下游
+        logger.warning(f"Invalid JSON body from {client_id}: {exc}")
+        message = "Request body is not a valid JSON object"
         conversation_logger.log_exchange(
             client_id=client_id,
             downstream_model="unknown",
@@ -116,6 +202,13 @@ async def _handle(request: Request, downstream_format: str) -> Response:
             auth=auth_summary,
         )
         return _error(400, "invalid_request_error", message, downstream_format)
+
+    # 超大的请求体只记元信息，避免单条日志把磁盘撑爆
+    max_logged = model_config.get_limits()["max_logged_body_mb"] * 1024 * 1024
+    if max_logged and len(raw_body) > max_logged:
+        request_for_log: object = {"__truncated__": True, "bytes": len(raw_body)}
+    else:
+        request_for_log = payload
 
     model_name = payload.get("model") or model_config._default
 
@@ -127,7 +220,7 @@ async def _handle(request: Request, downstream_format: str) -> Response:
             client_id=client_id,
             downstream_model=model_name,
             upstream_model="",
-            request=payload,
+            request=request_for_log,
             response={"status": 400, "error": str(exc)},
             auth=auth_summary,
         )
@@ -135,25 +228,26 @@ async def _handle(request: Request, downstream_format: str) -> Response:
 
     body = build_body(raw_body, payload, upstream["upstream_model"])
     headers = build_upstream_headers(request.headers, downstream_format, upstream)
-    url = build_upstream_url(upstream, downstream_format)
+    url = build_upstream_url(upstream, endpoint)
 
-    client = httpx.AsyncClient(timeout=UPSTREAM_TIMEOUT)
+    client = create_client()
     try:
         upstream_request = client.build_request("POST", url, headers=headers, content=body)
         resp = await client.send(upstream_request, stream=True)
     except httpx.HTTPError as exc:
         await client.aclose()
-        message = f"Failed to reach upstream: {exc}"
         logger.exception(f"Upstream connection failed for {model_name}: {exc}")
+        # 具体异常（可能含内网地址、代理信息）只进日志，不回显给下游
+        detail = f"{type(exc).__name__}: {exc}"[:500]
         conversation_logger.log_exchange(
             client_id=client_id,
             downstream_model=model_name,
             upstream_model=upstream["upstream_model"],
-            request=payload,
-            response={"status": 502, "error": message},
+            request=request_for_log,
+            response={"status": 502, "error": detail},
             auth=auth_summary,
         )
-        return _error(502, "upstream_error", message, downstream_format)
+        return _error(502, "upstream_error", "Failed to reach upstream", downstream_format)
 
     response_headers = filter_response_headers(resp.headers)
 
@@ -163,10 +257,19 @@ async def _handle(request: Request, downstream_format: str) -> Response:
             buffer = b""
             events: list = []
             truncated = False
+            total_bytes = 0
             try:
                 async for chunk in resp.aiter_bytes():
                     yield chunk
                     if truncated:
+                        continue
+                    total_bytes += len(chunk)
+                    # 响应超过日志上限：停止采集，只保留元信息（转发不受影响）
+                    if max_logged and total_bytes > max_logged:
+                        events.clear()
+                        events.append({"__truncated__": True, "bytes": total_bytes})
+                        truncated = True
+                        buffer = b""
                         continue
                     buffer += chunk
                     while True:
@@ -187,7 +290,7 @@ async def _handle(request: Request, downstream_format: str) -> Response:
                     client_id=client_id,
                     downstream_model=model_name,
                     upstream_model=upstream["upstream_model"],
-                    request=payload,
+                    request=request_for_log,
                     response={
                         "status": resp.status_code,
                         "headers": response_headers,
@@ -209,15 +312,21 @@ async def _handle(request: Request, downstream_format: str) -> Response:
         await resp.aclose()
         await client.aclose()
 
+    # 响应体同样受 max_logged_body_mb 限制，避免大响应把磁盘写满
+    if max_logged and len(upstream_body) > max_logged:
+        logged_body: object = {"__truncated__": True, "bytes": len(upstream_body)}
+    else:
+        logged_body = parse_json_body(upstream_body)
+
     conv_id = conversation_logger.log_exchange(
         client_id=client_id,
         downstream_model=model_name,
         upstream_model=upstream["upstream_model"],
-        request=payload,
+        request=request_for_log,
         response={
             "status": resp.status_code,
             "headers": response_headers,
-            "body": parse_json_body(upstream_body),
+            "body": logged_body,
         },
         auth=auth_summary,
     )
@@ -235,15 +344,21 @@ async def _handle(request: Request, downstream_format: str) -> Response:
 @app.post("/v1/messages")
 async def create_message(request: Request):
     """Claude 协议端点：仅透传给配置了 anthropic base_url 的上游。"""
-    return await _handle(request, "anthropic")
+    return await _handle(request, "anthropic", "messages")
 
 
 # ── OpenAI-compatible API ─────────────────────────────────────
 
 @app.post("/v1/chat/completions")
 async def create_chat_completion(request: Request):
-    """OpenAI 协议端点：仅透传给配置了 openai base_url 的上游。"""
-    return await _handle(request, "openai")
+    """OpenAI Chat Completions 端点。"""
+    return await _handle(request, "openai", "chat")
+
+
+@app.post("/v1/responses")
+async def create_response(request: Request):
+    """OpenAI Responses 端点：透传给上游 /v1/responses。"""
+    return await _handle(request, "openai", "responses")
 
 
 @app.get("/health")
@@ -301,6 +416,13 @@ async def list_aliases():
 @app.post("/v1/aliases")
 async def create_alias(alias: str, target: str):
     """Add or update a model alias."""
+    # 限制字符集：避免换行/冒号等字符写坏 aliases.yaml
+    if not _ALIAS_PATTERN.fullmatch(alias):
+        raise HTTPException(
+            status_code=400,
+            detail="alias must be 1-64 chars, start with a letter or digit, "
+                   "and contain only letters, digits, dot, underscore or hyphen",
+        )
     if target not in model_config._models:
         raise HTTPException(status_code=400, detail=f"Target model '{target}' not found")
 

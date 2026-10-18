@@ -95,6 +95,93 @@
 
 ---
 
+### 安全整改（按安全审计意见）
+
+| 审计项 | 整改内容 |
+|---|---|
+| 鉴权未启用 | `auth.enabled` **默认改为 true**；`keys` 为空时非本地一律拒绝（fail closed），启动打 warning |
+| httpx `trust_env=True` | 默认 `trust_env=False`，不再读取 `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY`；需要代理时显式配 `upstream.proxy` |
+| 请求头黑名单 | 改为**白名单**：只放行 `accept` / `accept-language` / `user-agent` / `anthropic-beta` / `anthropic-version` / `openai-organization` / `openai-project` / `openai-beta`；`Cookie`、`X-Forwarded-For`、`Referer`、自定义头不再到达上游 |
+| 上游 `Set-Cookie` 回传 | 响应侧过滤 `set-cookie` / `set-cookie2` / `access-control-*`；`request-id`、限流头仍保留 |
+| `/v1/aliases` YAML 注入 | `alias` 加正则校验（`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`）；`save_aliases` 改用 `yaml.safe_dump` 而非字符串拼接 |
+| 请求体无上限 | 边读边计数，超 `limits.max_body_mb`（默认 32MB）立即中断并返回 413；不整块读入内存 |
+| 无速率限制 | 按来源 IP 固定窗口限流（`limits.rate_limit_per_minute`，默认 0=不限），超出返回 429 + `Retry-After: 60` |
+| 错误信息泄露 | 502 只回 `Failed to reach upstream`，400 只回 `Request body is not a valid JSON object`；具体异常只写服务日志 |
+| 日志体积 | 单条请求超过 `limits.max_logged_body_mb`（默认 8MB）时，日志只记 `{"__truncated__": true, "bytes": N}` |
+
+**新增配置**：`limits`（max_body_mb / rate_limit_per_minute / max_logged_body_mb）、
+`upstream`（trust_env / proxy）。
+
+**验证**：`verify_hardening.py` 28/28 通过。
+回归：`verify_passthrough.py` 29/29（断言"自定义头已透传"改为"非白名单自定义头被丢弃"）、
+`verify_logging.py` 12/12、`verify_auth.py` 27/27、`test_proxy.py` 16/16。
+
+---
+
+### QA 复核发现的缺口及二次修复
+
+首轮验收脚本（`verify_hardening.py`）未覆盖以下场景，由独立对抗测试发现：
+
+| 缺口 | 复现证据 | 修复 |
+|---|---|---|
+| **鉴权失败不受限流约束** | 限流设 3/min，连续 30 次错误 key 全部返回 401、零 429，且每次失败写一行日志（可爆破 key + 日志放大） | 限流判断移到 `authenticate()` **之前**，401 同样消耗配额；复验 `{401: 3, 429: 27}` |
+| **响应体未做日志截断** | `max_logged_body_mb=1` 时，5MB 上游响应仍被完整写入日志（+5.00 MB） | 非流式按 `len(body)` 判断、流式按累计字节判断，超限只记 `{"__truncated__": true, "bytes": N}`；复验 +0.00 MB |
+| **空 `anthropic-version` 覆盖配置值** | 下游传空字符串，上游收到 `''` 而非配置的 `2023-06-01` | 白名单透传时跳过空值/纯空白头值，回落到配置默认 |
+| **`x-internal-*` / `server` 仍回传** | 上游 `X-Internal-Host: 10.0.0.5` 到达下游 | 响应头过滤前缀增加 `x-internal-`，并剔除 `server` |
+| **`max_body_mb=0` 语义不清** | 0 实际表示"上限 0 字节"，与 `rate_limit_per_minute` 的 0=不限不一致 | 统一为 **0 = 不限制**，配置与文档同步 |
+
+**复验**：上述 4 项全部转为通过；回归 `verify_passthrough.py` 29/29、`verify_hardening.py` 28/28、
+`verify_auth.py` 27/27、`verify_logging.py` 12/12、`test_proxy.py` 16/16。
+
+---
+
+### 新增 OpenAI Responses API 支持
+
+**改动**：
+- 新增 `POST /v1/responses` 路由，字节级透传到上游 `/v1/responses`
+- `proxy.py` 的 `_ENDPOINT_PATH` 从「协议格式 → 路径」改为「**端点类型** → 路径」：
+  `messages` / `chat` / `responses`
+- `_handle()` 增加 `endpoint` 参数；`downstream_format` 仍只决定上游 base_url 与鉴权头
+- 鉴权、限流、`_CONVERSATION_PATHS` 自动覆盖新端点，无需额外改动
+- 流式复用现有 SSE 逐字节转发；日志采集按 `data:` 行解析，天然兼容 `response.*` 事件
+
+**实测（DeepSeek）**：
+- `POST /v1/responses` 返回标准 `response` 对象（`object=response`、`output`、`usage`）
+- `/v1/responses` 与 `/responses` 两种路径都可用，取前者与现有 `/v1/*` 风格一致
+- `deepseek-v4-flash` 模型名可直接使用（文档写 `deepseek-flash`，实际两者都接受）
+- 流式为标准 SSE：`response.created` → `response.output_item.added` →
+  `response.reasoning_text.delta` / `response.output_text.delta` → `response.completed`
+
+**验证**：
+- `test_proxy.py` 新增 #17「OpenAI Responses (Non-Stream)」真实上游用例，**17/17 通过**
+- `verify_passthrough.py` 新增 6 项（路径转发 / 请求体逐字节 / instructions·reasoning·text·tools 保留 /
+  响应体逐字节 / 流式逐字节 / content-type），**35/35 通过**
+- 后续补充 legacy 跨协议用例后为 **37/37**
+
+**注意**：代理层已支持，但上游必须真的提供 `/v1/responses`。目前确认 DeepSeek 支持；
+其他厂商若只有 chat completions 兼容层，打该端点会原样收到上游的 404/400。
+
+---
+
+### 修复：legacy 格式绕过跨协议校验
+
+**问题**：`base_url` 用字符串 + `provider` 字段的旧写法，在 `get_upstream_info()` 里**没有校验
+`downstream_format`**，直接返回配置的 provider。后果是用错鉴权头去打上游：
+
+- `qwen3.6-plus-anthropic`（provider=anthropic）打 `/v1/responses` → 用 `Authorization: Bearer`
+  打 Anthropic 端点，下游只收到上游 401
+- `Qwen3.6-Coder`（provider=openai）打 `/v1/messages` → 用 `x-api-key` 打 OpenAI 端点，同样 401
+
+这违反了"跨协议一律 400"的既定决策，而且错误原因被藏在远端。
+
+**修复**：legacy 分支补上 `provider != downstream_format` 的拒绝逻辑，返回
+`Model 'xxx' only supports anthropic API format (downstream requested openai)`。
+
+**验证**：`verify_passthrough.py` 新增 2 项（legacy 模型打 Responses → 400、同协议仍可用），
+**37/37 通过**；`test_proxy.py` 17/17。
+
+---
+
 ## 历史改动 (2026-04-29)
 
 ### 移除交叉协议转换，仅支持同协议透传
@@ -183,6 +270,6 @@ python test_proxy.py --list
 
 ## 测试状态
 
-✅ **16/16 通过 (100.0%)** + `verify_passthrough.py` 29/29
+✅ **17/17 通过 (100.0%)** + `verify_passthrough.py` 37/37
 
 所有核心功能都有对应的测试验证。
