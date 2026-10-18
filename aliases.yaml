@@ -1,7 +1,8 @@
 # Model Aliases Configuration
 # Format: alias_name: target_model
 
-cc-coder: deepseek-v4-pro
-cc-coder-opus: deepseek-v4-pro
-cc-coder-sonet: deepseek-v4-pro
+cc-coder: deepseek-v4-flash
+cc-coder-opus: deepseek-v4-flash
+cc-coder-sonet: deepseek-v4-flash
 cc-coder-haiku: deepseek-v4-flash
+workbuddy-ds-v4-pro: deepseek-v4-flash
